@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Daemon runtime artifacts and credentials
+*.sock
+.jev-daemon.token
+*.pid
+*.pid.lock
+.env
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
