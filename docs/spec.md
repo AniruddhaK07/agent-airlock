@@ -201,7 +201,7 @@ jev:
   model: "jev-1.13.0" # Strictly pinned
   api_key_env: "TYPESAFE_API_KEY"
   base_url: "https://api.typesafe.ai/v1" # or gateway endpoint
-  timeout_seconds: 3.0
+  timeout_seconds: 0.400 # Strict 400ms wall-clock total fail-closed budget across retries
   thresholds:
     allow_confidence: 0.90
     deny_confidence: 0.85
@@ -417,8 +417,8 @@ class JevEvaluation:
 #### Client Interface (`jev_gateway/jev/client.py`)
 ```python
 class JevClient:
-    def __init__(self, api_key: str, model: str = "jev-1.13.0", base_url: str = "https://api.typesafe.ai/v1", timeout: float = 3.0):
-        self.model = model # Strictly pinned
+    def __init__(self, api_key: Optional[str] = None, model: str = "jev-1.13.0", base_url: str = "https://api.typesafe.ai/v1", timeout: float = 0.400):
+        self.model = model # Strictly pinned (wall-clock total budget 400ms across retries)
         ...
 
     def evaluate_ambiguous_tool(
