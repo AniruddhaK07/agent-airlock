@@ -25,3 +25,9 @@ ENV/
 dist/
 build/
 *.egg-info/
+
+# Model weights & training checkpoints (>100MB)
+checkpoints/
+*.safetensors
+*.bin
+

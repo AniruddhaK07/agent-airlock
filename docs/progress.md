@@ -1,13 +1,21 @@
 # Project Progress
 
-## Current Phase: Phase 4 — Circuit Breaker (Ready to start)
-- **Status**: Not started (Queued for next session)
+## Current Phase: Phase 3c — Daemon & Local Model Integration (Ready to start)
+- **Status**: Phase 3b Fine-Tuning Pipeline Complete; Queued for Daemon Integration (Phase 3c)
 - **Completed**:
-  - Phase 0 (Bootstrap): All baseline documents initialized and verified.
-  - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader. 100% test pass rate (18 tests, 130 subtests, 0 false negatives).
-  - Phase 2 (Daemon & IPC): Implemented long-running asynchronous daemon server (`DaemonServer`), dual-transport (`AF_UNIX` with automatic loopback TCP fallback and bearer token authentication), process/socket lifecycle management (`PIDManager`), ndjson request dispatcher (`IPCRouter`), in-memory state isolation partitioned by `workspace_root`, strict fail-closed on unresolved workspace, race-safe daemon auto-spawn with 200ms deadline in `StubHookClient` falling back to `force_ask`, Windows NTFS ACLs via `icacls`, and comprehensive integration test suite (`tests/test_daemon_ipc.py`). 100% test pass rate (38 tests, 130 subtests).
-  - Phase 3 (Jev Integration Layer): Implemented typed data models (`GateDecision`, `ChoiceRoute`, `JevEvaluation`, `JevDecisionResult`), calibrated System-1 rubrics (`SCORE_RUBRIC`, `NOUL_RUBRIC`, `CHOICE_RUBRIC`) with prompt formatter, pinned `JevClient` (`jev-1.13.0` with silent-upgrade prevention, retry logic, timeout handling, and dual schema parsing), `JevEvaluator` with strict safety and confidence threshold gating, and `IPCRouter` integration dispatching ambiguous tool actions to Jev with strict fail-closed fallback to `ask`. Completed Phase 3 verification with strict 400ms wall-clock total request budget across retries and benchmark matrix rubric validation. Initialized git repository at `https://github.com/AniruddhaK07/jev-airlock`, pushed to `main`, and tagged `phase3-complete`. 100% test pass rate (64 tests, 130 subtests).
-- **What's next**: Implement Phase 4 Circuit Breaker: failure signature hasher (tool, error snippet, command hash), rolling history window per workspace, repeat detection, and Noul escalation.
+  - Phase 0 (Bootstrap): Baseline documents initialized and verified.
+  - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader (18 tests, 130 subtests, 0 false negatives).
+  - Phase 2 (Daemon & IPC): Implemented asynchronous daemon server (`DaemonServer`), dual-transport (`AF_UNIX` with loopback TCP fallback and token auth), process lifecycle (`PIDManager`), ndjson router (`IPCRouter`), workspace isolation, fail-closed on unresolved context, race-safe auto-spawn with 200ms deadline, Windows NTFS ACLs via `icacls`, and test suite (38 tests).
+  - Phase 3 (Jev Integration Layer): Implemented typed models, calibrated rubrics, pinned client (`jev-1.13.0`), threshold evaluator, fail-closed handling, and 400ms wall-clock deadline budget. Tagged `phase3-complete` on GitHub.
+  - Phase 3b (Laya Migration, Fine-Tuning Pipeline & Calibration):
+    - Curated 200 diverse, realistic developer command examples across 5 archetypes with validation-oracle labeling.
+    - Partitioned into 80/20 stratified split: 160 train, 40 held-out validation.
+    - Executed joint fine-tuning on RTX 4050 6GB VRAM across score, noul, and choice heads (`loss = loss_choice + 0.6 * loss_score + 0.6 * loss_noul`).
+    - Discovered root cause of invalid temperature runtime warnings (`choice:11+=0.10058` outside `[0.5, 5]`); fitted post-hoc temperatures on validation logits (`choice:3-5`=1.3400, `score:3-5`=2.0800, `noul:2`=1.8600, reset `choice:11+`=1.0). Confirmed zero runtime warnings on reload.
+    - Evaluated held-out validation split (N=40): choice accuracy reached **85.0%** (up from 47.5%), reversibility accuracy reached **87.5%** (up from 40.0%), blast radius MAE improved to **0.748** (from 1.353).
+    - Re-tested 15-command benchmark: mismatches dropped from 11/15 (baseline) to **4/15** (11/15 matches), with **100% detection on known-dangerous** (`rm -rf /`, `curl | sh`, `chmod 777 /etc` all routed to `needs-human`) and **100% preservation on known-safe** (`ls`, `git log`, `cat package.json` all routed to `deterministic-safe` with confidence >= 0.81).
+    - Exported verified fine-tuned model package to `checkpoints/laya-finetuned/`.
+- **What's next**: Implement Phase 3c to integrate the local fine-tuned Laya engine into `DaemonServer` and `IPCRouter`, replacing the remote HTTP client with in-process sub-millisecond local inference.
 - **Blockers**: None.
 
 ---

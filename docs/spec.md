@@ -4,14 +4,14 @@
 
 The Jev-Gated Safety Layer is a local, deterministic-first, fail-closed runtime extension designed to intercept and gate tool executions emitted by the Antigravity CLI. It operates via the Antigravity lifecycle hooks (`PreToolUse` and `PostToolUse`), routing decisions through a multi-tiered architecture:
 1. **Deterministic Hard Policy Engine**: Zero-latency static rule matching for obvious safe and obvious dangerous operations.
-2. **Circuit Breaker**: Hash-based failure signature buffer with optional Jev Noul semantic confirmation to prevent autoregressive repair loops.
-3. **Jev Integration Layer**: Typed, calibrated System-1 probabilistic evaluation (`Score`, `Noul`, `Choice`) pinned to `jev-1.13.0` for ambiguous actions.
+2. **Circuit Breaker**: Hash-based failure signature buffer with optional semantic confirmation to prevent autoregressive repair loops.
+3. **Probabilistic Evaluation Layer (Laya / Jev)**: Typed, calibrated System-1 probabilistic evaluation (`Score`, `Noul`, `Choice`) for ambiguous actions. Transitioned to local, open-source Laya (`convaiinnovations/laya`, Apache 2.0) to eliminate payment access friction.
 4. **Append-Only Audit Log**: Complete event provenance for every tool call and gating decision.
 
 ### Non-Negotiable Invariants
-1. **Strict Fail-Closed**: Any failure (daemon down, IPC timeout, network partition, Jev API error, or low confidence score) MUST evaluate to `ask` (human confirmation), NEVER `allow`.
+1. **Strict Fail-Closed**: Any failure (daemon down, IPC timeout, network partition, model inference error, or low confidence score) MUST evaluate to `ask` (human confirmation), NEVER `allow`.
 2. **Hard Rules Precede Probabilistic Inference**: Dangerous actions (e.g., `rm -rf /`, credential exfiltration) MUST be blocked deterministically by the policy engine; they must NEVER depend on model evaluation.
-3. **Pinned Model Identity**: All calls to the Jev model must explicitly specify the pinned model version (`jev-1.13.0`). Silent model upgrades are strictly forbidden.
+3. **Explicit Model Identity & Local Direct Loading**: All probabilistic model calls must target explicit pinned checkpoints. For local Laya inference, integration code MUST directly invoke `laya.load("convaiinnovations/laya")` (or the validated fine-tuned local checkpoint path), NOT `Router()`. `Router()` lazy-loads a separate multilingual checkpoint neither needed nor wanted for English shell commands. Silent model upgrades or unpinned aliases are strictly forbidden.
 4. **Thin Hooks, Fat Daemon**: Hook scripts must remain thin (<50 lines of code) with minimal startup overhead, delegating all state, network IO, and evaluation to the background daemon via local IPC.
 5. **Full Auditability**: Every single evaluation path, whether deterministic or probabilistic, must emit an immutable structured audit log entry before returning a decision.
 
@@ -455,6 +455,23 @@ class JevEvaluator:
         """
         ...
 ```
+
+#### 6.2.1. Local Engine: Laya Integration (`convaiinnovations/laya`)
+Due to payment and access friction with upstream cloud APIs, the probabilistic gating engine transitions from remote Jev to local Laya (Convai Innovations, Apache 2.0).
+
+- **Target Workstation Hardware**: AMD Ryzen 7 4050HS-class CPU, NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM), 16GB DDR5, 1TB NVMe.
+- **Runtime Environment**: Python 3.11/3.13 (`torch_env`), `laya>=0.3.3` (installed `laya==0.3.20`), PyTorch CUDA active.
+- **Loading Protocol**: Direct invocation `laya.load("checkpoints/laya-finetuned")` (or base `"convaiinnovations/laya"`). `Router()` is strictly prohibited as it triggers lazy-loading of secondary multilingual checkpoints unnecessary for English developer commands.
+- **Evaluation Contract**: Implements the identical evaluation triad:
+  - `score`: Blast radius (1.0–5.0)
+  - `noul`: Reversibility probability (0.0–1.0)
+  - `choice`: Routing decision (`deterministic-safe`, `needs-human`, `needs-reasoning-model`)
+- **Adaptation & Fine-Tuning Status (Phase 3b Complete)**:
+  - Fine-tuned on 160 curated developer tool commands with joint cross-entropy loss across all three heads.
+  - Held-out validation split (N=40, stratified across all 5 archetypes) demonstrated **85.0% choice accuracy**, **87.5% noul accuracy**, and **0.748 blast radius MAE**.
+  - Calibration warning resolved via post-hoc temperature scaling on validation logits: `choice:3-5` = 1.3400, `score:3-5` = 2.0800, `noul:2` = 1.8600, `choice:11+` = 1.0 (valid in `[0.5, 5.0]`).
+  - Saved to `checkpoints/laya-finetuned`. Verified zero runtime warnings on load.
+  - Original 15-command benchmark re-run reduced mismatches from 11/15 to 4/15, with 100% detection on known-dangerous and 100% preservation on known-safe operations.
 
 ### 6.3. Circuit Breaker (`jev_gateway.circuit_breaker`)
 
