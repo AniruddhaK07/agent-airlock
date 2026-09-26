@@ -15,6 +15,7 @@
     - Evaluated held-out validation split (N=40): choice accuracy reached **85.0%** (up from 47.5%), reversibility accuracy reached **87.5%** (up from 40.0%), blast radius MAE improved to **0.748** (from 1.353).
     - Re-tested 15-command benchmark: mismatches dropped from 11/15 (baseline) to **4/15** (11/15 matches), with **100% detection on known-dangerous** (`rm -rf /`, `curl | sh`, `chmod 777 /etc` all routed to `needs-human`) and **100% preservation on known-safe** (`ls`, `git log`, `cat package.json` all routed to `deterministic-safe` with confidence >= 0.81).
     - Exported verified fine-tuned model package to `checkpoints/laya-finetuned/`.
+    - Completed Phase 3b close-out verification: audited 15-command benchmark overlap with `train.json` (60.0% exact, 33.3% near, 6.7% novel; documented caveat in `decisions.md`); verified `kill -9 1234` root cause (label divergence in `train.json`) and confirmed **0 / 40 errors** with confidence $\ge 0.90$ and **0 / 40 false-allows** $\ge 0.90$ on the held-out validation set.
 - **What's next**: Implement Phase 3c to integrate the local fine-tuned Laya engine into `DaemonServer` and `IPCRouter`, replacing the remote HTTP client with in-process sub-millisecond local inference.
 - **Blockers**: None.
 
