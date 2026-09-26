@@ -84,12 +84,24 @@ class DaemonServer:
                     except Exception as e:
                         logger.warning("Failed to initialize JevClient: %s", e)
 
+            audit_logger = None
+            try:
+                from jev_gateway.audit.logger import AuditLogger
+                audit_logger = AuditLogger(
+                    log_path=self.config.audit.log_file,
+                    flush_immediate=self.config.audit.flush_immediate,
+                    retention_days=self.config.audit.retention_days,
+                )
+            except Exception as e:
+                logger.warning("Failed to initialize AuditLogger in DaemonServer: %s", e)
+
             jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds)
             self.router = IPCRouter(
                 policy_engine=self.policy_engine,
                 jev_client=jev_client,
                 jev_evaluator=jev_evaluator,
                 circuit_breaker_config=self.config.circuit_breaker,
+                audit_logger=audit_logger,
             )
 
         self.server: Optional[asyncio.Server] = None

@@ -8,6 +8,7 @@ and formats structured responses.
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import datetime, timezone
 import json
 import time
 import uuid
@@ -43,12 +44,14 @@ class IPCRouter:
         jev_client: Optional[Any] = None,
         jev_evaluator: Optional[Any] = None,
         circuit_breaker_config: Optional[Any] = None,
+        audit_logger: Optional[Any] = None,
     ):
         self.policy_engine = policy_engine or HardPolicyEngine()
         self.auth_token = auth_token
         self.jev_client = jev_client
         self.jev_evaluator = jev_evaluator
         self.circuit_breaker_config = circuit_breaker_config
+        self.audit_logger = audit_logger
         self.start_time = time.time()
         self.workspaces: Dict[str, WorkspaceState] = {}
 
@@ -151,7 +154,8 @@ class IPCRouter:
         if event in ("PreToolUse", "PostToolUse"):
             ws_root = self._extract_workspace_root(payload)
             if not ws_root:
-                return {
+                audit_id = self._generate_audit_id()
+                res = {
                     "version": version,
                     "status": "fail_closed",
                     "decision": "force_ask",
@@ -159,9 +163,31 @@ class IPCRouter:
                     "ruleId": None,
                     "permissionOverrides": [],
                     "overwrite": None,
-                    "auditId": self._generate_audit_id(),
+                    "auditId": audit_id,
                     "workspaceRoot": None,
                 }
+                if self.audit_logger:
+                    try:
+                        from jev_gateway.audit.models import AuditEvent
+                        tool_call = payload.get("toolCall", {})
+                        ev = AuditEvent(
+                            event_id=audit_id,
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            conversation_id=str(payload.get("conversationId", "")),
+                            step_idx=int(payload.get("stepIdx", 0)),
+                            event_type=str(event),
+                            tool_name=str(tool_call.get("name", "")),
+                            tool_args=dict(tool_call.get("args", {})),
+                            policy_verdict="none",
+                            final_decision="force_ask",
+                            reason="workspace context unresolved",
+                            latency_ms=0.0,
+                            workspace_root=None,
+                        )
+                        self.audit_logger.log(ev)
+                    except Exception as e:
+                        logger.warning("Failed to log unresolved workspace audit event: %s", e)
+                return res
 
             ws_state = self.get_workspace_state(ws_root)
             if event == "PreToolUse":
@@ -185,6 +211,7 @@ class IPCRouter:
         ws_state: WorkspaceState,
         version: str,
     ) -> Dict[str, Any]:
+        t_start = time.time()
         tool_call = payload.get("toolCall", {})
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
@@ -194,7 +221,8 @@ class IPCRouter:
         policy_result: PolicyResult = self.policy_engine.evaluate(tool_name, tool_args)
 
         if policy_result.verdict == PolicyVerdict.DENY:
-            return {
+            latency_ms = (time.time() - t_start) * 1000.0
+            res = {
                 "version": version,
                 "status": "success",
                 "decision": "deny",
@@ -205,8 +233,11 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
+            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            return res
         elif policy_result.verdict == PolicyVerdict.ALLOW:
-            return {
+            latency_ms = (time.time() - t_start) * 1000.0
+            res = {
                 "version": version,
                 "status": "success",
                 "decision": "allow",
@@ -217,6 +248,8 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
+            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            return res
         else:
             # PolicyVerdict.AMBIGUOUS:
             # 1. Circuit Breaker: check for repeating failure loops before probabilistic gating
@@ -227,7 +260,8 @@ class IPCRouter:
                     step_idx=payload.get("stepIdx", 0),
                 )
                 if cb_res.is_tripped:
-                    return {
+                    latency_ms = (time.time() - t_start) * 1000.0
+                    res = {
                         "version": version,
                         "status": "success",
                         "decision": cb_res.action,
@@ -240,6 +274,12 @@ class IPCRouter:
                         "circuitBreakerTripped": True,
                         "circuitBreakerSummary": cb_res.to_dict(),
                     }
+                    self._log_pre_tool_event(
+                        payload, ws_state, policy_result, res,
+                        circuit_breaker_tripped=True,
+                        latency_ms=latency_ms,
+                    )
+                    return res
 
             # 2. Route through Jev Integration Layer if configured
             if self.jev_client and self.jev_evaluator:
@@ -265,7 +305,8 @@ class IPCRouter:
                         if hasattr(jev_decision.decision, "value")
                         else str(jev_decision.decision)
                     )
-                    return {
+                    total_latency = (time.time() - t_start) * 1000.0
+                    res = {
                         "version": version,
                         "status": "success",
                         "decision": dec_val,
@@ -277,6 +318,13 @@ class IPCRouter:
                         "workspaceRoot": ws_state.workspace_root,
                         "jevEvaluation": evaluation.to_dict() if hasattr(evaluation, "to_dict") else None,
                     }
+                    self._log_pre_tool_event(
+                        payload, ws_state, policy_result, res,
+                        circuit_breaker_tripped=False,
+                        jev_evaluation=res["jevEvaluation"],
+                        latency_ms=total_latency,
+                    )
+                    return res
                 except Exception as e:
                     logger.warning("Jev evaluation error, failing closed to ask: %s", e)
                     latency = (time.time() - t0) * 1000.0
@@ -290,7 +338,8 @@ class IPCRouter:
                         if hasattr(jev_decision.decision, "value")
                         else str(jev_decision.decision)
                     )
-                    return {
+                    total_latency = (time.time() - t_start) * 1000.0
+                    res = {
                         "version": version,
                         "status": "fail_closed",
                         "decision": dec_val,
@@ -301,9 +350,16 @@ class IPCRouter:
                         "auditId": audit_id,
                         "workspaceRoot": ws_state.workspace_root,
                     }
+                    self._log_pre_tool_event(
+                        payload, ws_state, policy_result, res,
+                        circuit_breaker_tripped=False,
+                        latency_ms=total_latency,
+                    )
+                    return res
             else:
                 # No Jev client configured -> default fail-closed to "ask"
-                return {
+                latency_ms = (time.time() - t_start) * 1000.0
+                res = {
                     "version": version,
                     "status": "success",
                     "decision": "ask",
@@ -314,6 +370,8 @@ class IPCRouter:
                     "auditId": audit_id,
                     "workspaceRoot": ws_state.workspace_root,
                 }
+                self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+                return res
 
     def _handle_post_tool_use(
         self,
@@ -358,12 +416,85 @@ class IPCRouter:
                 step_idx=step_idx,
             )
 
-        return {
+        res = {
             "version": version,
             "status": "success",
             "auditId": audit_id,
             "workspaceRoot": ws_state.workspace_root,
         }
+        self._log_post_tool_event(payload, ws_state, audit_id, error_msg)
+        return res
+
+    def _log_pre_tool_event(
+        self,
+        payload: Dict[str, Any],
+        ws_state: WorkspaceState,
+        policy_result: PolicyResult,
+        res: Dict[str, Any],
+        circuit_breaker_tripped: bool = False,
+        jev_evaluation: Optional[Dict[str, Any]] = None,
+        latency_ms: float = 0.0,
+    ) -> None:
+        if not self.audit_logger:
+            return
+
+        try:
+            from jev_gateway.audit.models import AuditEvent
+            tool_call = payload.get("toolCall", {})
+            event = AuditEvent(
+                event_id=res.get("auditId") or self._generate_audit_id(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                conversation_id=str(payload.get("conversationId", "")),
+                step_idx=int(payload.get("stepIdx", 0)),
+                event_type="PreToolUse",
+                tool_name=str(tool_call.get("name", "")),
+                tool_args=dict(tool_call.get("args", {})),
+                policy_verdict=policy_result.verdict.value,
+                matched_rule_id=policy_result.rule_id,
+                circuit_breaker_tripped=circuit_breaker_tripped,
+                jev_evaluation=jev_evaluation,
+                final_decision=str(res.get("decision", "ask")),
+                reason=str(res.get("reason", "")),
+                latency_ms=round(float(latency_ms), 2),
+                workspace_root=ws_state.workspace_root,
+            )
+            self.audit_logger.log(event)
+        except Exception as e:
+            logger.warning("Failed to log PreToolUse audit event: %s", e)
+
+    def _log_post_tool_event(
+        self,
+        payload: Dict[str, Any],
+        ws_state: WorkspaceState,
+        audit_id: str,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        if not self.audit_logger:
+            return
+
+        try:
+            from jev_gateway.audit.models import AuditEvent
+            tool_call = payload.get("toolCall", {})
+            event = AuditEvent(
+                event_id=audit_id,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                conversation_id=str(payload.get("conversationId", "")),
+                step_idx=int(payload.get("stepIdx", 0)),
+                event_type="PostToolUse",
+                tool_name=str(tool_call.get("name", "")),
+                tool_args=dict(tool_call.get("args", {})),
+                policy_verdict="none",
+                matched_rule_id=None,
+                circuit_breaker_tripped=False,
+                jev_evaluation=None,
+                final_decision="recorded",
+                reason=str(error_msg or "Execution recorded successfully"),
+                latency_ms=0.0,
+                workspace_root=ws_state.workspace_root,
+            )
+            self.audit_logger.log(event)
+        except Exception as e:
+            logger.warning("Failed to log PostToolUse audit event: %s", e)
 
     def _handle_ping(self, version: str) -> Dict[str, Any]:
         return {

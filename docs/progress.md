@@ -1,7 +1,7 @@
 # Project Progress
 
-## Current Phase: Phase 5 — Audit log (Ready to start)
-- **Status**: Phase 4 (Circuit Breaker) Complete; Queued for Audit Log (Phase 5)
+## Current Phase: Phase 6 — Antigravity hook integration (Ready to start)
+- **Status**: Phase 5 (Audit Log) Complete; Queued for Hook Integration (Phase 6)
 - **Completed**:
   - Phase 0 (Bootstrap): Baseline documents initialized and verified.
   - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader (18 tests, 130 subtests, 0 false negatives). Hardened with generalized fork-bomb detection.
@@ -26,15 +26,19 @@
     - Implemented `jev_gateway/circuit_breaker/hasher.py`: normalizes ephemeral tokens (timestamps, PIDs, memory pointers, line/col numbers) and computes reproducible SHA-256 digests and string similarity.
     - Implemented `jev_gateway/circuit_breaker/breaker.py`: two-tier loop detection:
       - Tier 1: In-code hash pre-filter catches exact repeating failures in rolling window (0 ms).
-      - Tier 2: When surface text differs but similarity $\ge 0.80$, escalates to local Laya Noul question for semantic confirmation (~38 ms).
+      - Tier 2: When surface text differs but similarity $\ge 0.80$, escalates to local Laya Noul question for semantic confirmation (~38 ms). Requires affirmative repeat probability (`min_repeat_prob=0.60`) AND high confidence (`0.80`).
       - Halts runaway fix loops and returns `force_ask` with detailed failure history summary.
     - Integrated with `IPCRouter` and `DaemonServer` partitioned strictly by `workspace_root`.
     - Maintained dispatch order: hard policy engine first and authoritative, circuit breaker before probabilistic gating, never ahead of hard-deny.
-    - Authored comprehensive test suite `tests/test_circuit_breaker.py` (11 tests). All 83 tests in project passing (100% pass rate).
-- **What's next**: Implement Phase 5 (structured append-only JSONL audit logger, event schema, verification reader, integration with policy and evaluation pathways).
+    - Authored comprehensive test suite `tests/test_circuit_breaker.py` (12 tests).
+  - Phase 5 (Audit Log):
+    - Implemented `AuditEvent` dataclass (`jev_gateway/audit/models.py`) with ISO 8601 timestamps and comprehensive schema fields.
+    - Implemented `AuditLogger` (`jev_gateway/audit/logger.py`) with thread-safe append-only writes, immediate buffer flush, non-disruptive error handling, and atomic log rotation via temporary file replacement.
+    - Implemented `AuditReader` (`jev_gateway/audit/reader.py`) with file integrity verification (syntax check, ISO timestamp validation, corrupted line identification), flexible querying, and metric statistics aggregation.
+    - Wired `AuditLogger` directly into `IPCRouter` and `DaemonServer`.
+    - Authored comprehensive test suite `tests/test_audit_log.py` (19 tests). Total project test suite now stands at 103 passed tests (100% pass rate).
+- **What's next**: Implement Phase 6 (production Antigravity hook scripts `<50` lines for PreToolUse and PostToolUse, `.agents/hooks.json` mounting).
 - **Blockers**: None.
-
-
 
 ---
 
@@ -86,15 +90,25 @@
 - **Blockers**: None.
 
 ## Phase 4 — Circuit breaker
-- **Status**: Not started
-- **Completed**: None.
-- **What's left**: Implement error signature hasher (tool, error snippet, diff), history window buffer, repeat detection, Noul escalation on semantic repetition, loop-halt signal.
+- **Status**: Done
+- **Completed**:
+  - Implemented `hasher.py` with ephemeral token normalization (timestamps, PIDs, addresses, lines/cols), SHA-256 digesting, and string similarity.
+  - Implemented `breaker.py` with two-tier loop detection: Tier 1 hash pre-filter (0 ms) and Tier 2 Laya Noul semantic repeat escalation (~38 ms) requiring affirmative repeat probability (`min_repeat_prob=0.60`) and high confidence (`0.80`).
+  - Integrated into `IPCRouter` and `DaemonServer` with strict workspace partitioning.
+  - Verified hard-deny precedence and fail-loop halting.
+  - Authored 12 tests in `tests/test_circuit_breaker.py`. Tagged `phase4-complete`.
+- **What's left**: None (Phase 4 exit criteria met).
 - **Blockers**: None.
 
 ## Phase 5 — Audit log
-- **Status**: Not started
-- **Completed**: None.
-- **What's left**: Implement structured append-only JSONL logger, event schema, verification reader, integration with policy and Jev evaluation pathways.
+- **Status**: Done
+- **Completed**:
+  - Implemented `AuditEvent` schema in `jev_gateway/audit/models.py`.
+  - Implemented `AuditLogger` append-only thread-safe writer with atomic log rotation in `jev_gateway/audit/logger.py`.
+  - Implemented `AuditReader` query engine, integrity verifier, and statistics aggregator in `jev_gateway/audit/reader.py`.
+  - Integrated `AuditLogger` with `IPCRouter` and `DaemonServer`.
+  - Authored 19 tests in `tests/test_audit_log.py`. Total 103 tests passing.
+- **What's left**: None (Phase 5 exit criteria met).
 - **Blockers**: None.
 
 ## Phase 6 — Antigravity hook integration

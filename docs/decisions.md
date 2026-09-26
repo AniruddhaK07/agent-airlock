@@ -371,6 +371,35 @@ Findings & Decisions:
    - **Pre-Fragmentation Unified Matching**: In `jev_gateway/policy/engine.py`, candidate strings checked against deny rules include the set `{raw_cmd, norm_cmd, strip_cmd}` as well as individual chained sub-commands (`sub_cmds`). Shell chaining operators (`;`, `|`, `&`) are fundamental components of the recursive fork bomb syntax `:(){ :|:& };:`. If command chain splitting occurred before pattern evaluation, the function definition would be fragmented into disjoint fragments (`:(){ :`, `:`, `}`, `:`), destroying the contiguous recursive structure and bypassing detection. Evaluating the generalized backreference regex against the unified candidate strings (`raw_cmd`, `norm_cmd`, `strip_cmd`) ensures deterministic denial before and independent of chain fragmentation.
 Model: Flash
 
+## [Phase 5] Immutable Append-Only Audit Logging and Verification Subsystem — 2026-09-27
+Context: A trustworthy open-source safety gate requires complete, tamper-evident auditability. Operators and agents must be able to inspect every gating verdict, policy rule match, probabilistic classification, circuit-breaker halt, and execution result with zero ambiguity and without impacting daemon latency or stability.
+
+Decision:
+1. Append-Only JSON Lines (`audit.jsonl`):
+   - Chose UTF-8 newline-delimited JSON (`ndjson`/`jsonl`) located by default at `~/.gemini/antigravity-cli/audit.jsonl`.
+   - Each event is a self-contained, valid JSON record terminated with `\n`.
+   - Streaming append operations run in $O(1)$ without memory bloat or needing full file rewrites.
+2. Complete Structured Event Schema (`AuditEvent`):
+   - Fields captured per event: `event_id`, `timestamp` (ISO 8601 UTC), `conversation_id`, `step_idx`, `event_type` (`PreToolUse` | `PostToolUse`), `tool_name`, `tool_args`, `policy_verdict` (`allow` | `deny` | `ambiguous` | `none`), `matched_rule_id`, `circuit_breaker_tripped`, `jev_evaluation`, `final_decision` (`allow` | `deny` | `ask` | `force_ask` | `recorded`), `reason`, `latency_ms`, `workspace_root`, and `metadata`.
+3. Thread-Safe and Fail-Safe Write Contract (`AuditLogger`):
+   - Concurrency: Mutex-protected file write via `threading.Lock()` guarantees zero line interleaving or corrupted JSON under multi-threaded request processing (verified via 10 concurrent threads writing 200 events).
+   - Durability: `flush_immediate=True` forces synchronous buffer flush to disk on every event write.
+   - Non-Disruptive Fail-Open for Logging Errors: File I/O or directory permission errors are caught and logged as warnings; logging failures NEVER raise exceptions or impede the safety gateway's primary gating flow.
+4. Atomic Log Rotation and Retention Cleanup:
+   - Configurable retention (default 30 days) prunes expired records by atomically writing surviving lines to `.tmp` and replacing the main log via `os.replace()`, preventing race conditions or data loss during rotation.
+5. Verification Reader and Analytical Engine (`AuditReader`):
+   - `verify_integrity()` scans lines, validates JSON structure and ISO timestamps, and identifies 1-indexed corrupted line numbers.
+   - `query()` supports rich filtering across conversation, workspace, decision, tool, verdict, and timestamp windows.
+   - `get_statistics()` aggregates decisions, rule hits, circuit-breaker trips, average latencies, and tool distributions.
+6. End-to-End Daemon IPC Integration:
+   - Wired seamlessly into `IPCRouter` and `DaemonServer`. Automatically logs all `PreToolUse` (hard deny, hard allow, circuit breaker trips, Jev evaluations, ambiguous fall-through), `PostToolUse` execution outcomes, and unresolved workspace fail-closed events.
+   - Authored `tests/test_audit_log.py` (19 tests). Total project test suite now stands at 103 passed tests (100% pass rate).
+
+Rejected:
+- SQLite or relational database for audit log: introduces binary file corruption risks on unclean shutdown and external dependency overhead; plain JSONL provides universal tool compatibility (`grep`, `jq`, log collectors).
+- Asynchronous fire-and-forget logging queue: while slightly faster, risks losing critical audit trail lines on abrupt process crashes; synchronous atomic line writes with OS buffer flush provide superior durability with <0.5 ms overhead.
+Model: Flash
+
 
 
 
