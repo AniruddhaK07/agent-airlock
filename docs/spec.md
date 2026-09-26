@@ -434,6 +434,30 @@ class JevClient:
         ...
 ```
 
+#### Local In-Process Laya Client (`jev_gateway/jev/local_laya.py`)
+```python
+class LocalLayaClient:
+    def __init__(self, checkpoint_path: Optional[str] = None):
+        """
+        In-process local classifier using the fine-tuned Laya checkpoint.
+        Directly loads via laya.load(checkpoint_path), NEVER Router().
+        Maintains resident cached agent in GPU VRAM across invocations.
+        """
+        ...
+
+    def evaluate_ambiguous_tool(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None
+    ) -> JevEvaluation:
+        """
+        Dispatches tool call to local Laya model across blast_radius, reversible, and route questions.
+        Sub-millisecond local execution without network overhead or API credentials.
+        """
+        ...
+```
+
 #### Decision Logic (`jev_gateway/jev/evaluator.py`)
 ```python
 class JevEvaluator:

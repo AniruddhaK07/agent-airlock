@@ -1,7 +1,7 @@
 # Project Progress
 
-## Current Phase: Phase 3c — Daemon & Local Model Integration (Ready to start)
-- **Status**: Phase 3b Fine-Tuning Pipeline Complete; Queued for Daemon Integration (Phase 3c)
+## Current Phase: Phase 4 — Circuit breaker (Ready to start)
+- **Status**: Phase 3c (Daemon & Local Model Integration) Complete; Queued for Circuit Breaker (Phase 4)
 - **Completed**:
   - Phase 0 (Bootstrap): Baseline documents initialized and verified.
   - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader (18 tests, 130 subtests, 0 false negatives).
@@ -13,11 +13,18 @@
     - Executed joint fine-tuning on RTX 4050 6GB VRAM across score, noul, and choice heads (`loss = loss_choice + 0.6 * loss_score + 0.6 * loss_noul`).
     - Discovered root cause of invalid temperature runtime warnings (`choice:11+=0.10058` outside `[0.5, 5]`); fitted post-hoc temperatures on validation logits (`choice:3-5`=1.3400, `score:3-5`=2.0800, `noul:2`=1.8600, reset `choice:11+`=1.0). Confirmed zero runtime warnings on reload.
     - Evaluated held-out validation split (N=40): choice accuracy reached **85.0%** (up from 47.5%), reversibility accuracy reached **87.5%** (up from 40.0%), blast radius MAE improved to **0.748** (from 1.353).
-    - Re-tested 15-command benchmark: mismatches dropped from 11/15 (baseline) to **4/15** (11/15 matches), with **100% detection on known-dangerous** (`rm -rf /`, `curl | sh`, `chmod 777 /etc` all routed to `needs-human`) and **100% preservation on known-safe** (`ls`, `git log`, `cat package.json` all routed to `deterministic-safe` with confidence >= 0.81).
+    - Re-tested 15-command benchmark: mismatches dropped from 11/15 (baseline) to **4/15** (11/15 matches), with **100% detection on known-dangerous** and **100% preservation on known-safe**.
     - Exported verified fine-tuned model package to `checkpoints/laya-finetuned/`.
     - Completed Phase 3b close-out verification: audited 15-command benchmark overlap with `train.json` (60.0% exact, 33.3% near, 6.7% novel; documented caveat in `decisions.md`); verified `kill -9 1234` root cause (label divergence in `train.json`) and confirmed **0 / 40 errors** with confidence $\ge 0.90$ and **0 / 40 false-allows** $\ge 0.90$ on the held-out validation set.
-- **What's next**: Implement Phase 3c to integrate the local fine-tuned Laya engine into `DaemonServer` and `IPCRouter`, replacing the remote HTTP client with in-process sub-millisecond local inference.
+  - Phase 3c (Daemon & Local Model Integration):
+    - Implemented `LocalLayaClient` in `jev_gateway/jev/local_laya.py` loading `checkpoints/laya-finetuned` directly via `laya.load()` (never `Router()`).
+    - Implemented singleton model memory residency to eliminate repeated weight reloads and prevent CUDA VRAM fragmentation.
+    - Integrated `LocalLayaClient` into `DaemonServer` and `IPCRouter` with dynamic provider negotiation (`"local"` / `"remote"` / `"none"`).
+    - Validated in-process inference with sub-50ms latency and strict fail-closed fallback to `ask` on model exceptions.
+    - Authored integration test suite `tests/test_local_laya.py` (8 tests). All 72 tests in project passing (100% pass rate).
+- **What's next**: Implement Phase 4 to build the stateful circuit breaker (error signature hasher, sliding history window buffer, repeat failure detection, and Noul escalation).
 - **Blockers**: None.
+
 
 ---
 

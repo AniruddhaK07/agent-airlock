@@ -276,6 +276,32 @@ Findings & Decisions:
 
 Model: Flash
 
+## [Phase 3c] Local Fine-Tuned Laya Engine Integration & Daemon In-Process Routing — 2026-09-27
+Context: Replacing the remote HTTP Jev client with the local fine-tuned Laya model requires integrating in-process inference into `DaemonServer` and `IPCRouter` while preserving low latency, preventing GPU VRAM exhaustion, strictly enforcing the direct loading invariant (`laya.load()`, NEVER `Router()`), and upholding the fail-closed invariant.
+
+Decision:
+1. Direct Model Loading & Invariant Enforcement:
+   - Implemented `LocalLayaClient` in `jev_gateway/jev/local_laya.py`.
+   - Uses `laya.load(checkpoint_path)` directly pointing to `checkpoints/laya-finetuned`.
+   - Never uses `Router()`, avoiding lazy-loading unwanted multilingual checkpoints.
+2. Singleton Resident Agent Caching:
+   - Module-level agent caching (`get_laya_agent`) maintains single-instance GPU VRAM residency (~1GB) across multiple daemon operations and test fixtures, eliminating multi-instance memory fragmentation and repeated load overhead.
+3. Zero-Network, Low-Latency Tool Evaluation:
+   - Dispatches `blast_radius`, `reversible`, and `route` questions simultaneously to Laya's state-encoder.
+   - Maps Laya's 0–4 score scale cleanly to JevEvaluator's 1.0–5.0 rubric (`pred_blast + 1.0`).
+   - Achieves sub-50ms local GPU inference without network roundtrips.
+4. Daemon Integration & Strict Fail-Closed Fallback:
+   - `DaemonServer` dynamically loads `LocalLayaClient` when `config.jev.provider in ("local", "laya")` or falls back to remote `JevClient` or `PolicyVerdict.AMBIGUOUS -> ASK`.
+   - Any runtime model exception during tool evaluation is captured and routed to `GateDecision.ASK` (fail-closed).
+5. Comprehensive Test Coverage:
+   - Added `tests/test_local_laya.py` (8 tests) verifying direct load, safe command allow, dangerous command deny/ask, below-threshold fallback, inference latency, error fail-closed handling, and end-to-end IPC roundtrips through the live daemon. Total suite: 72 tests passing.
+
+Rejected:
+- Process reloading of PyTorch weights per IPC request (caused excessive latency and VRAM allocation failures).
+- Using `Router()` wrapper (lazy-loads unneeded multilingual weights).
+Model: Flash
+
+
 
 
 

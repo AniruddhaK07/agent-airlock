@@ -53,18 +53,37 @@ class DaemonServer:
         if router is not None:
             self.router = router
         else:
-            api_key = os.getenv(self.config.jev.api_key_env, "")
             jev_client = None
-            if api_key:
+            provider = getattr(self.config.jev, "provider", "auto").lower()
+            checkpoint_path = getattr(self.config.jev, "checkpoint_path", "checkpoints/laya-finetuned")
+
+            # Check if local fine-tuned Laya model can/should be loaded
+            should_try_local = provider in ("local", "laya") or (
+                provider == "auto" and os.path.exists(checkpoint_path)
+            )
+
+            if should_try_local:
                 try:
-                    jev_client = JevClient(
-                        api_key=api_key,
-                        model=self.config.jev.model,
-                        base_url=self.config.jev.base_url,
-                        timeout=self.config.jev.timeout_seconds,
-                    )
+                    from jev_gateway.jev.local_laya import LocalLayaClient
+                    jev_client = LocalLayaClient(checkpoint_path=checkpoint_path)
+                    logger.info("Daemon initialized with in-process LocalLayaClient (%s)", checkpoint_path)
                 except Exception as e:
-                    logger.warning("Failed to initialize JevClient: %s", e)
+                    logger.warning("Could not initialize LocalLayaClient: %s", e)
+
+            # If local client was not loaded and remote provider or API key is available
+            if jev_client is None:
+                api_key = os.getenv(self.config.jev.api_key_env, "")
+                if api_key or provider == "remote":
+                    try:
+                        jev_client = JevClient(
+                            api_key=api_key,
+                            model=self.config.jev.model,
+                            base_url=self.config.jev.base_url,
+                            timeout=self.config.jev.timeout_seconds,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to initialize JevClient: %s", e)
+
             jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds)
             self.router = IPCRouter(
                 policy_engine=self.policy_engine,

@@ -41,6 +41,8 @@ class JevThresholdsConfig(BaseModel):
     default: str = "ask"
 
 class JevConfig(BaseModel):
+    provider: str = "none"  # "none" | "local" | "remote"
+    checkpoint_path: str = "checkpoints/laya-finetuned"
     model: str = "jev-1.13.0"
     api_key_env: str = "TYPESAFE_API_KEY"
     base_url: str = "https://api.typesafe.ai/v1"
