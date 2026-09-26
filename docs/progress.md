@@ -1,7 +1,7 @@
 # Project Progress
 
-## Current Phase: Phase 6 — Antigravity hook integration (Ready to start)
-- **Status**: Phase 5 (Audit Log) Complete; Queued for Hook Integration (Phase 6)
+## Current Phase: Phase 7 — Test/eval scenario harness
+- **Status**: Phase 6 (Antigravity Hook Integration) Complete; Queued for Scenario Test Suite (Phase 7)
 - **Completed**:
   - Phase 0 (Bootstrap): Baseline documents initialized and verified.
   - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader (18 tests, 130 subtests, 0 false negatives). Hardened with generalized fork-bomb detection.
@@ -38,7 +38,12 @@
     - Wired `AuditLogger` directly into `IPCRouter` and `DaemonServer`.
     - Restored `shlex` as primary tokenization in `normalizer.py` with defensive try/except parse handling and fail-closed routing for unparseable syntax, backed by unified regex matching layer.
     - Authored comprehensive test suite `tests/test_audit_log.py` (19 tests) and updated daemon/policy test suites. Total project test suite now stands at 105 passed tests (100% pass rate).
-- **What's next**: Implement Phase 6 (production Antigravity hook scripts `<50` lines for PreToolUse and PostToolUse, `.agents/hooks.json` mounting).
+  - Phase 6 (Antigravity Hook Integration):
+    - Authored production `pre_tool_use.py` (41 lines) and `post_tool_use.py` (39 lines), strictly under the 50-line limit.
+    - Integrated automatic repository root self-resolution into `sys.path` and created `pyproject.toml` with editable package install (`pip install -e .`).
+    - Implemented `installer.py` supporting dynamic config generation with absolute script paths and safe `.agents/hooks.json` merging.
+    - Authored comprehensive test suite `tests/test_hooks.py` (10 tests) verifying line-counts, schema, stdin/stdout compliance, and end-to-end daemon IPC gating. Total project test suite now stands at 115 passed tests (100% pass rate).
+- **What's next**: Implement Phase 7 (Test/eval scenario harness for scripted safe, dangerous, ambiguous, repeating-failure, and offline daemon scenarios).
 - **Blockers**: None.
 
 ---
@@ -114,9 +119,14 @@
 - **Blockers**: None.
 
 ## Phase 6 — Antigravity hook integration
-- **Status**: Not started
-- **Completed**: None.
-- **What's left**: Implement production PreToolUse and PostToolUse hook scripts (<50 lines each), generate `.agents/hooks.json`, verify against Antigravity CLI lifecycle execution.
+- **Status**: Done
+- **Completed**:
+  - Authored production `jev_gateway/hooks/pre_tool_use.py` (41 lines) and `post_tool_use.py` (39 lines), strictly under the 50-line limit.
+  - Implemented automatic repository root self-resolution into `sys.path` to decouple hook execution from working directories.
+  - Authored `pyproject.toml` and installed `jev-gateway` in editable mode (`pip install -e .`) in `torch_env`.
+  - Implemented `installer.py` supporting dynamic config generation with absolute script paths and safe `.agents/hooks.json` merging.
+  - Authored comprehensive test suite `tests/test_hooks.py` (10 tests) covering line counts, schema, installer merging, empty/malformed stdin compliance, and live daemon IPC policy round-trips. Total test suite stands at 115 passed tests (100% pass rate).
+- **What's left**: None (Phase 6 exit criteria met).
 - **Blockers**: None.
 
 ## Phase 7 — Test/eval harness

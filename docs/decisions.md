@@ -414,6 +414,28 @@ Rejected:
 - Asynchronous fire-and-forget logging queue: while slightly faster, risks losing critical audit trail lines on abrupt process crashes; synchronous atomic line writes with OS buffer flush provide superior durability with <0.5 ms overhead.
 Model: Flash
 
+## [Phase 6] Production Antigravity Hook Integration & Lifecycle Gating — 2026-09-27
+Context: Phase 6 delivers the production integration bridging the Antigravity CLI agent loop with the Jev Airlock safety daemon via native lifecycle hooks.
+
+Decisions:
+1. Thin Hook Scripts (<50 Lines Each):
+   - **`pre_tool_use.py` (41 lines)**: Intercepts tool calls before execution. Reads tool payload from `stdin`, dispatches to `StubHookClient`, and writes compliant JSON (`{"decision": "...", "reason": "..."}`) to `stdout`. Defensively catches all exceptions and empty input, strictly failing closed to `{"decision": "ask"}`.
+   - **`post_tool_use.py` (39 lines)**: Receives tool execution results (`stdout`, `stderr`, `exitCode`) from `stdin`. Asynchronously informs the daemon via `PostToolUse` IPC for error tracking, circuit-breaker history, and immutable audit logging. Emits standard `{}` JSON to `stdout` per Antigravity contract without blocking tool completion.
+
+2. Self-Resolving Execution Environment & Absolute Path Mounting:
+   - **Working Directory Decoupling**: Antigravity executes hooks with its working directory set to the customization directory (`.agents/`). To prevent `ModuleNotFoundError` across environments, each hook script injects its parent repository root (`Path(__file__).resolve().parents[2]`) into `sys.path` prior to importing `jev_gateway`.
+   - **Absolute Invocation**: `installer.py` generates `.agents/hooks.json` specifying fully-qualified, quote-wrapped paths (`"{py_exec}" "{script_path}"`).
+   - **Package Packaging**: Authored `pyproject.toml` and installed `jev-gateway` in editable mode (`pip install -e .`) in `torch_env`.
+
+3. Fast IPC Handoff and Fail-Closed Auto-Spawn:
+   - Hook scripts maintain zero business logic or ML weights. They delegate entirely to `StubHookClient`.
+   - When the daemon is offline, `StubHookClient` enforces a 200 ms auto-spawn deadline with cross-process `FileLock` synchronization. If startup exceeds 200 ms, it immediately returns `{"decision": "force_ask"}` to ensure safety without hanging the agent.
+
+4. Test Suite and Verification:
+   - Implemented `tests/test_hooks.py` with 10 comprehensive tests covering line-count bounds, schema generation, installer merging, stdin/stdout empty and malformed input handling, and end-to-end live daemon policy dispatch (`allow`, `deny`, `auditId`).
+   - Total test suite now stands at 115 tests and 137 subtests passing with 100% pass rate.
+Model: Flash
+
 
 
 
