@@ -301,6 +301,58 @@ Rejected:
 - Using `Router()` wrapper (lazy-loads unneeded multilingual weights).
 Model: Flash
 
+## [Phase 3c Follow-Up] Training Corpus Consistency Audit, Real GPU Latency Grounding, and Fork-Bomb Hardening — 2026-09-27
+Context: Prior to and alongside Phase 4 kickoff, three follow-up items from Phase 3c were resolved:
+  1. Internal label consistency audit across the 200-example training and validation corpus.
+  2. Grounded empirical latency benchmark with explicit CUDA stream synchronization (`torch.cuda.synchronize()`).
+  3. Comprehensive hardening of fork-bomb patterns in the Phase 1 hard-deny rules.
+
+Findings & Decisions:
+1. Corpus Consistency Audit:
+   - Evaluated 21 command families across `data/train.json` (160) and `data/val.json` (40):
+     - **Process management**: Single-PID kills (`kill -9 1234`) were labeled `deterministic-safe` (blast=1, rev=0.6) as bounded operations, while broad targets (`pkill -9 -f python`, `systemctl stop sshd`) were consistently labeled `needs-human` (blast=2–3, rev=0.0–0.3). This internal divergence explains the benchmark difference noted in Phase 3b.
+     - **Git operations**: Read-only queries (`git status`, `git log`, `git diff`) were 100% consistent (`deterministic-safe`, blast=0, rev=1.0). Destructive resets (`git reset --hard origin/main`, blast=2, rev=0.2) were labeled `needs-human`, while local rollback (`git reset --hard HEAD~1`, blast=1, rev=0.8) was labeled `deterministic-safe` due to local git reflog recoverability.
+     - **Filesystem deletions**: System-wide/catastrophic deletions (`rm -rf /`, `rm -rf ~`, `rm -f /boot/vmlinuz*`) were 100% consistent (`needs-human`, blast=4, rev=0.0). Local scoped deletions (`rm -rf ./node_modules`, `rm -rf ./build`, `rm -f ./tmp_test_file.txt`) were consistently labeled `deterministic-safe` (blast=0–1, rev=0.7–0.9).
+     - **Package managers**: Standard package installations were consistently `deterministic-safe` (blast=1, rev=0.8), while untrusted external URLs or suspicious packages were consistently `needs-human` (blast=2–3, rev=0.2–0.3).
+   - Resolution: Grounded these semantics into documentation. The corpus reflects a consistent policy philosophy: bounded workspace operations with local regenerability are treated as safe, while broad, un-scoped, or system-level mutations require human review.
+
+2. Real Synchronized Latency Measurement (RTX 4050 Laptop GPU):
+   - Refuting "sub-millisecond" claim: In PyTorch, measuring asynchronous CPU dispatch without `torch.cuda.synchronize()` gives an illusion of low latency (~35 ms dispatch). Explicit synchronization before and after inference measures actual hardware compute completion.
+   - Empirical results (N = 100 runs, resident cached model):
+     - **p50 (Median)**: **38.14 ms**
+     - **p90**: **44.10 ms**
+     - **p95**: **47.16 ms**
+     - **p99**: **61.21 ms**
+     - **Mean**: **39.78 +/- 5.65 ms**
+     - **Cold start (1st inference)**: 322.00 ms
+   - Correction: Corrected `spec.md` to state **38 ms p50 / 47 ms p95** real GPU latency. This provides the realistic latency foundation for circuit breaker budgeting.
+
+3. Fork Bomb Hardening in Phase 1 Hard-Deny List:
+   - Audit found that existing regex `:()\s*{\s*:|:&\s*};\s*:` was too rigid, missing whitespace variations (e.g. `:() { :|:& }; :`), arbitrary identifier fork bombs (e.g. `bomb(){ bomb|bomb& };bomb`, `f(){ f|f& };f`), and PowerShell infinite process loops (`while ($true) { Start-Process powershell }`).
+   - Hardened `deny-fork-bomb` rule in `jev_gateway/policy/default_rules.py` with generalized backreference regex `r'([a-zA-Z0-9_.:]+)\s*\(\s*\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1'` and loop detectors. All variations are now blocked deterministically at Tier 1 without relying on probabilistic model gating.
+Model: Flash
+
+## [Phase 4] Two-Tier Stateful Circuit Breaker & Noul Escalation — 2026-09-27
+Context: Autoregressive agent loops often get trapped attempting repetitive failing fixes (e.g., retrying broken build/test commands or making slight flag adjustments). A safety layer must detect and halt runaway loops while maintaining low latency, strict workspace isolation, and respecting hard-policy authority.
+
+Decision:
+1. Two-Tier Detection Architecture:
+   - **Tier 1 (Hash Pre-Filter, 0 ms)**: Normalizes ephemeral tokens (timestamps, PIDs, memory addresses, line/col numbers) and computes SHA-256 digests. Exact repeats of previously failed commands in the rolling window ($N=3$) trip immediately to `force_ask`.
+   - **Tier 2 (Noul Escalation, ~38 ms)**: When surface text differs but structural similarity $\ge 0.80$, the breaker queries local Laya's `noul` primitive (`"Is this command semantically repeating the failed operation...?"`). If Noul confirms semantic repetition ($\ge 0.80$ confidence or $\ge 0.35$ probability), execution is halted with `force_ask`.
+2. Authoritative Dispatch Precedence:
+   - Hard Policy Engine runs first and authoritative: hard-deny commands (`rm -rf /`, fork bombs) are always denied with zero exceptions; hard-allow read-only commands (`ls`, `git status`) are permitted immediately.
+   - Circuit Breaker only gates ambiguous operations before probabilistic routing, never ahead of hard-deny.
+3. Workspace State Isolation:
+   - `CircuitBreaker` instances are partitioned strictly per normalized `workspace_root`. Repeated failures in Project A never pollute or halt actions in Project B.
+4. Comprehensive Test Coverage:
+   - Authored `tests/test_circuit_breaker.py` (11 tests) verifying hashing, ephemeral normalization, exact repeat halts, non-repeating command pass-through, Noul escalation, workspace isolation, hard-deny precedence, and end-to-end daemon IPC loop halting. Total test suite: 83 tests passing.
+
+Rejected:
+- Global unpartitioned failure history (violates workspace isolation).
+- Querying LLM/Laya on every single failure check (wastes ~38 ms on non-repeating commands; Tier 1 hash filter runs first in 0 ms).
+Model: Flash
+
+
 
 
 

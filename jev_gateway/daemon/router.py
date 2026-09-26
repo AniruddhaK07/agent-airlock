@@ -27,6 +27,7 @@ class WorkspaceState:
     workspace_root: str
     failure_history: List[Any] = field(default_factory=list)
     audit_buffer: List[Dict[str, Any]] = field(default_factory=list)
+    circuit_breaker: Optional[Any] = None
     created_at: float = field(default_factory=time.time)
 
 class IPCRouter:
@@ -41,11 +42,13 @@ class IPCRouter:
         auth_token: Optional[str] = None,
         jev_client: Optional[Any] = None,
         jev_evaluator: Optional[Any] = None,
+        circuit_breaker_config: Optional[Any] = None,
     ):
         self.policy_engine = policy_engine or HardPolicyEngine()
         self.auth_token = auth_token
         self.jev_client = jev_client
         self.jev_evaluator = jev_evaluator
+        self.circuit_breaker_config = circuit_breaker_config
         self.start_time = time.time()
         self.workspaces: Dict[str, WorkspaceState] = {}
 
@@ -63,7 +66,21 @@ class IPCRouter:
             norm_key = str(workspace_root).strip()
 
         if norm_key not in self.workspaces:
-            self.workspaces[norm_key] = WorkspaceState(workspace_root=norm_key)
+            cb = None
+            try:
+                from jev_gateway.circuit_breaker.breaker import CircuitBreaker
+                cb = CircuitBreaker(
+                    workspace_root=norm_key,
+                    config=self.circuit_breaker_config,
+                    local_laya_client=self.jev_client,
+                )
+            except Exception as e:
+                logger.warning("Could not initialize CircuitBreaker for %s: %s", norm_key, e)
+
+            self.workspaces[norm_key] = WorkspaceState(
+                workspace_root=norm_key,
+                circuit_breaker=cb,
+            )
         return self.workspaces[norm_key]
 
     def _extract_workspace_root(self, payload: Dict[str, Any]) -> Optional[str]:
@@ -202,7 +219,29 @@ class IPCRouter:
             }
         else:
             # PolicyVerdict.AMBIGUOUS:
-            # Route through Jev Integration Layer if configured
+            # 1. Circuit Breaker: check for repeating failure loops before probabilistic gating
+            if ws_state.circuit_breaker:
+                cb_res = ws_state.circuit_breaker.check_pre_tool(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    step_idx=payload.get("stepIdx", 0),
+                )
+                if cb_res.is_tripped:
+                    return {
+                        "version": version,
+                        "status": "success",
+                        "decision": cb_res.action,
+                        "reason": cb_res.reason,
+                        "ruleId": None,
+                        "permissionOverrides": [],
+                        "overwrite": None,
+                        "auditId": audit_id,
+                        "workspaceRoot": ws_state.workspace_root,
+                        "circuitBreakerTripped": True,
+                        "circuitBreakerSummary": cb_res.to_dict(),
+                    }
+
+            # 2. Route through Jev Integration Layer if configured
             if self.jev_client and self.jev_evaluator:
                 t0 = time.time()
                 try:
@@ -289,6 +328,36 @@ class IPCRouter:
             "timestamp": time.time(),
             "payload": payload,
         })
+
+        # Check for tool execution failure to record in circuit breaker
+        tool_call = payload.get("toolCall", {})
+        tool_result = payload.get("toolResult", {})
+        error_msg = None
+
+        if payload.get("status") == "error":
+            error_msg = payload.get("error") or "Execution failed with status error"
+        elif isinstance(tool_result, dict):
+            exit_code = tool_result.get("exitCode")
+            if exit_code not in (0, None):
+                error_msg = (
+                    tool_result.get("stderr")
+                    or tool_result.get("error")
+                    or f"Command failed with exit code {exit_code}"
+                )
+            elif tool_result.get("error"):
+                error_msg = str(tool_result.get("error"))
+        elif payload.get("error"):
+            error_msg = str(payload.get("error"))
+
+        if error_msg and ws_state.circuit_breaker:
+            step_idx = payload.get("stepIdx", 0)
+            ws_state.circuit_breaker.record_failure(
+                tool_name=tool_call.get("name", "run_command"),
+                tool_args=tool_call.get("args", {}),
+                error=error_msg,
+                step_idx=step_idx,
+            )
+
         return {
             "version": version,
             "status": "success",

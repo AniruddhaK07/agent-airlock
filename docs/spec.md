@@ -179,6 +179,11 @@ policy:
       tools: ["run_command"]
       field: "CommandLine"
       pattern: '(nc\s+-e|bash\s+-i\s+>&|socat\s+exec)'
+    - id: "deny-fork-bomb"
+      description: "Process table exhaustion or fork bomb patterns"
+      tools: ["run_command"]
+      field: "CommandLine"
+      pattern: '([a-zA-Z0-9_.:]+)\s*\(\s*\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1|while\s*(\$true|true)\s*\{.*?\}'
 
   hard_allow:
     - id: "allow-safe-git"
@@ -453,7 +458,7 @@ class LocalLayaClient:
     ) -> JevEvaluation:
         """
         Dispatches tool call to local Laya model across blast_radius, reversible, and route questions.
-        Sub-millisecond local execution without network overhead or API credentials.
+        Fast in-process GPU execution (~38 ms median / 47 ms p95 with CUDA sync) without network overhead or API credentials.
         """
         ...
 ```
@@ -496,37 +501,76 @@ Due to payment and access friction with upstream cloud APIs, the probabilistic g
   - Calibration warning resolved via post-hoc temperature scaling on validation logits: `choice:3-5` = 1.3400, `score:3-5` = 2.0800, `noul:2` = 1.8600, `choice:11+` = 1.0 (valid in `[0.5, 5.0]`).
   - Saved to `checkpoints/laya-finetuned`. Verified zero runtime warnings on load.
   - Original 15-command benchmark re-run reduced mismatches from 11/15 to 4/15, with 100% detection on known-dangerous and 100% preservation on known-safe operations.
+- **Empirical Latency Profile (RTX 4050 GPU, CUDA synchronized via `torch.cuda.synchronize()`)**:
+  - `p50 (Median)`: **38.14 ms**
+  - `p90`: **44.10 ms**
+  - `p95`: **47.16 ms**
+  - `p99`: **61.21 ms**
+  - `Mean`: **39.78 ms** (+/- 5.65 ms)
+  - `Cold start (1st inference)`: 322.00 ms
+  - Model initialization: resident singleton (~1GB VRAM).
 
 ### 6.3. Circuit Breaker (`jev_gateway.circuit_breaker`)
 
 #### Interface (`jev_gateway/circuit_breaker/breaker.py`)
 ```python
-@dataclass
-class FailureSignature:
+@dataclass(frozen=True)
+class ErrorSignature:
     tool_name: str
-    error_hash: str
+    command_or_target: str
+    error_message: str
+    normalized_command: str
+    normalized_error: str
     command_hash: str
+    error_hash: str
     step_idx: int
     timestamp: float
 
-class CircuitBreaker:
-    def __init__(self, window_size: int = 3, jev_client: Optional[JevClient] = None):
-        self.window_size = window_size
-        self.history: List[FailureSignature] = []
-        self.jev_client = jev_client
+@dataclass(frozen=True)
+class CircuitBreakerResult:
+    is_tripped: bool
+    action: str  # "force_ask", "deny", or "none"
+    reason: Optional[str] = None
+    repeat_count: int = 0
+    noul_confidence: Optional[float] = None
+    history_summary: List[Dict[str, Any]] = field(default_factory=list)
 
-    def record_failure(self, tool_name: str, tool_args: Dict[str, Any], error: str, step_idx: int) -> None:
-        """Records an execution error into the rolling history window."""
+class CircuitBreaker:
+    def __init__(
+        self,
+        workspace_root: str,
+        config: Optional[CircuitBreakerConfig] = None,
+        local_laya_client: Optional[Any] = None,
+    ):
         ...
 
-    def check_pre_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    def record_failure(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        error: str,
+        step_idx: int = 0,
+        timestamp: Optional[float] = None
+    ) -> ErrorSignature:
+        """Records an execution error into the workspace rolling history window."""
+        ...
+
+    def check_pre_tool(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        step_idx: int = 0
+    ) -> CircuitBreakerResult:
         """
-        Returns (is_loop_detected, reason).
-        If an identical error/command pattern occurred repeatedly in the window,
-        trips the circuit breaker to halt runaway autoregressive loops.
+        Two-tier loop detection:
+          Tier 1: Hash pre-filter checks exact and near command patterns (0ms).
+          Tier 2: When surface text differs but similarity >= threshold, escalates to
+                  local Laya Noul question for semantic confirmation (~38ms).
+        Returns CircuitBreakerResult tripping to 'force_ask' on confirmed loops.
         """
         ...
 ```
+
 
 ### 6.4. Audit Logging (`jev_gateway.audit`)
 

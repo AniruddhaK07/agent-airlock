@@ -158,7 +158,14 @@ class TestHardPolicyEngine(unittest.TestCase):
         fork_bombs = [
             ":(){ :|:& };:",
             ":(){ :|:& }; :",
+            ":() { :|:& }; :",
+            ":(){:|:&};:",
+            "bomb(){ bomb|bomb& };bomb",
+            "f(){ f|f& };f",
+            "f() { f | f & }; f",
+            ".(){ .|.& };.",
             "while ($true) { Start-Process powershell }",
+            "while true; do bash -c x & done",
         ]
         for cmd in fork_bombs:
             with self.subTest(cmd=cmd):

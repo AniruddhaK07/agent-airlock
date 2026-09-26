@@ -153,8 +153,13 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r':\(\)\{\s*:\|:&\s*\};\s*:|'
-                r'while\s*\(\$true\)\s*\{\s*Start-Process\s+powershell\s*\}'
+                r'(?:'
+                r'([a-zA-Z0-9_.:]+)\s*\(\s*\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1|'
+                r':\(\)\s*\{.*?\}\s*;\s*:|'
+                r'while\s*\(\s*\$true\s*\)\s*\{\s*.*?(?:Start-Process|powershell|pwsh).*?\}|'
+                r'while\s+(?:true|:\s*;?)\s*;?\s*do\s+.*?(?:ba|z|da|k)?sh.*?&?\s*done|'
+                r'(\w+)\s*\(\s*\)\s*\{.*?\b\1\b\s*\|\s*\b\1\b.*?\}'
+                r')'
             ),
         ),
 

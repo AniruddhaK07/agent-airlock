@@ -89,6 +89,7 @@ class DaemonServer:
                 policy_engine=self.policy_engine,
                 jev_client=jev_client,
                 jev_evaluator=jev_evaluator,
+                circuit_breaker_config=self.config.circuit_breaker,
             )
 
         self.server: Optional[asyncio.Server] = None
