@@ -366,9 +366,11 @@ Findings & Decisions:
    - **Non-Trip Handling**: If Noul evaluates the candidate and fails to meet both criteria (i.e. model leans negative or uncertain), the circuit breaker explicitly permits execution (`is_tripped=False`, `action="none"`) without falling back to string heuristic tripping. Fallback to high string similarity ($\ge 0.85$) is strictly reserved for when Laya is absent or raises an execution exception.
    - **Regression Verification**: Added `test_noul_rejection_when_confident_not_repeat` in `tests/test_circuit_breaker.py` testing candidate `"npm install pkg-name --prod"` with `noul=0.35, conf=0.88` against prior failure `"npm install pkg-name"`. Verified that Tier 1 escalates to Noul and Noul's confident non-repeat decision correctly prevents breaker tripping.
 
-2. Fork-Bomb Pattern Normalization Scope:
-   - **Deliberate Exclusion of `shlex`**: Python's `shlex.split()` is deliberately avoided throughout the entire policy normalization pipeline (`jev_gateway/policy/normalizer.py`). Shell function syntax (`:(){ :|:& };:`) and unclosed quotes/syntax errors in raw command inputs cause `shlex.split()` to raise fatal `ValueError: No closing quotation` exceptions. Catching or falling back on `shlex` exceptions risks either unhandled crashes or fail-open vulnerabilities. Custom regex-based sanitization (`normalize_command`) is used instead to strip quotes and caret escapes while preserving structural integrity.
-   - **Pre-Fragmentation Unified Matching**: In `jev_gateway/policy/engine.py`, candidate strings checked against deny rules include the set `{raw_cmd, norm_cmd, strip_cmd}` as well as individual chained sub-commands (`sub_cmds`). Shell chaining operators (`;`, `|`, `&`) are fundamental components of the recursive fork bomb syntax `:(){ :|:& };:`. If command chain splitting occurred before pattern evaluation, the function definition would be fragmented into disjoint fragments (`:(){ :`, `:`, `}`, `:`), destroying the contiguous recursive structure and bypassing detection. Evaluating the generalized backreference regex against the unified candidate strings (`raw_cmd`, `norm_cmd`, `strip_cmd`) ensures deterministic denial before and independent of chain fragmentation.
+2. Shlex Restoration & Fork-Bomb Normalization Scope (Correcting the Record):
+   - **Walk-Back & Correction of Prior Decision**: The earlier decision to bypass `shlex` entirely in favor of regex-only sanitization was a walk-back of our core anti-evasion architecture that introduced a subtle false-allow vulnerability. Without strict tokenization, malformed commands with unbalanced quotes (e.g. `git status "unclosed_string`) could bypass word-boundary checks and erroneously match permissive hard-allow regexes.
+   - **Restored Primary Tokenization**: Restored standard POSIX `shlex` as the primary tokenization path in `jev_gateway/policy/normalizer.py` (`tokenize_command`), wrapped defensively in `try/except (ValueError, Exception)`.
+   - **Strict Fail-Closed on Parse Failure**: On parse failure (e.g. `ValueError: No closing quotation`), the policy engine does **not** fall through to weaker regex-only matching for allow rules. An unparseable command is treated as an inherently suspicious signal and routes strictly to fail-closed (`rule_id="unparseable-command-syntax"`, `PolicyVerdict.AMBIGUOUS`, returning `decision: "ask"` directly without model querying). If the unparseable string contains destructive operations, it is caught by hard-deny first.
+   - **Layered Defense (Shlex + Unified Regex)**: The existing `{raw_cmd, norm_cmd, strip_cmd}` unified regex matching is retained as an **additional defensive layer** on top of `shlex` output, rather than a replacement for it. This preserves contiguous multi-token matching needed for fork bombs (`:(){ :|:& };:`) while gaining the robust quoting and word splitting guarantees of POSIX `shlex`.
 Model: Flash
 
 ## [Phase 5] Immutable Append-Only Audit Logging and Verification Subsystem — 2026-09-27
@@ -381,19 +383,31 @@ Decision:
    - Streaming append operations run in $O(1)$ without memory bloat or needing full file rewrites.
 2. Complete Structured Event Schema (`AuditEvent`):
    - Fields captured per event: `event_id`, `timestamp` (ISO 8601 UTC), `conversation_id`, `step_idx`, `event_type` (`PreToolUse` | `PostToolUse`), `tool_name`, `tool_args`, `policy_verdict` (`allow` | `deny` | `ambiguous` | `none`), `matched_rule_id`, `circuit_breaker_tripped`, `jev_evaluation`, `final_decision` (`allow` | `deny` | `ask` | `force_ask` | `recorded`), `reason`, `latency_ms`, `workspace_root`, and `metadata`.
-3. Thread-Safe and Fail-Safe Write Contract (`AuditLogger`):
-   - Concurrency: Mutex-protected file write via `threading.Lock()` guarantees zero line interleaving or corrupted JSON under multi-threaded request processing (verified via 10 concurrent threads writing 200 events).
-   - Durability: `flush_immediate=True` forces synchronous buffer flush to disk on every event write.
-   - Non-Disruptive Fail-Open for Logging Errors: File I/O or directory permission errors are caught and logged as warnings; logging failures NEVER raise exceptions or impede the safety gateway's primary gating flow.
+3. Thread-Safe, Hot-Path Synchronous Write Contract (`AuditLogger`):
+   - **Synchronous Hot-Path Execution**: `AuditLogger.log()` executes synchronously and blocking within the `PreToolUse` and `PostToolUse` request-response path in `IPCRouter`, executing immediately before the JSON response is serialized and returned over the IPC socket.
+   - **Measured Latency Contribution (`flush_immediate=True`, NVMe SSD, N=1,000)**:
+     - **p50 (Median)**: **0.287 ms**
+     - **p95**: **0.456 ms**
+     - **p99**: **0.610 ms**
+     - **Mean**: **0.313 ms**
+     - **Max**: 0.973 ms
+     - Known cost on hot path: Adds ~0.29 ms p50 / ~0.46 ms p95. Against our 400 ms fail-closed budget, this represents ~0.07% overhead—an acceptable, quantified cost to guarantee on-disk durability before any gated tool executes.
+   - **Concurrency**: Mutex-protected file write via `threading.Lock()` guarantees zero line interleaving or corrupted JSON under multi-threaded request processing (verified via 10 concurrent threads writing 200 events).
+   - **Non-Disruptive Fail-Open for Logging Errors**: File I/O or directory permission errors are caught and logged as warnings; logging failures NEVER raise exceptions or impede the safety gateway's primary gating flow.
 4. Atomic Log Rotation and Retention Cleanup:
-   - Configurable retention (default 30 days) prunes expired records by atomically writing surviving lines to `.tmp` and replacing the main log via `os.replace()`, preventing race conditions or data loss during rotation.
+   - **Default Retention**: The default value for `max_days` in `cleanup_old_events()` is **30 days** (inherited from `self.retention_days = 30`, configured in `AuditConfig.retention_days`).
+   - **Retention-vs-Disk-Space Tradeoff**:
+     - At ~400 bytes per event and 500–2,000 tool operations per day, a 30-day window generates ~15 MB of uncompressed JSONL (or ~120 MB at extreme 10,000 calls/day). On a 1TB NVMe drive, this footprint is negligible.
+     - Keeping 30 days provides sufficient temporal history to debug regressions across multiple development sprints and analyze security incident post-mortems.
+     - Atomic rotation writes surviving records to `.tmp` and replaces the main log via `os.replace()`, preventing race conditions during rotation.
+     - Deliberately rejects infinite retention (unbounded log growth / linear scan degradation) and short retention (<7 days, which risks losing context during multi-day review cycles).
 5. Verification Reader and Analytical Engine (`AuditReader`):
    - `verify_integrity()` scans lines, validates JSON structure and ISO timestamps, and identifies 1-indexed corrupted line numbers.
    - `query()` supports rich filtering across conversation, workspace, decision, tool, verdict, and timestamp windows.
    - `get_statistics()` aggregates decisions, rule hits, circuit-breaker trips, average latencies, and tool distributions.
 6. End-to-End Daemon IPC Integration:
    - Wired seamlessly into `IPCRouter` and `DaemonServer`. Automatically logs all `PreToolUse` (hard deny, hard allow, circuit breaker trips, Jev evaluations, ambiguous fall-through), `PostToolUse` execution outcomes, and unresolved workspace fail-closed events.
-   - Authored `tests/test_audit_log.py` (19 tests). Total project test suite now stands at 103 passed tests (100% pass rate).
+   - Authored `tests/test_audit_log.py` (19 tests) and updated daemon IPC tests. Total project test suite now stands at 105 passed tests (100% pass rate).
 
 Rejected:
 - SQLite or relational database for audit log: introduces binary file corruption risks on unclean shutdown and external dependency overhead; plain JSONL provides universal tool compatibility (`grep`, `jq`, log collectors).

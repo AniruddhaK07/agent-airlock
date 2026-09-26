@@ -87,6 +87,15 @@ class TestDaemonIPC(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.get("decision"), "ask")
         self.assertIn("auditId", res)
 
+    async def test_pre_tool_use_unparseable_syntax_fails_closed(self):
+        res = await asyncio.to_thread(
+            self.client.check_tool, "run_command", {"CommandLine": 'git status "unclosed_string'}
+        )
+        self.assertEqual(res.get("status"), "fail_closed")
+        self.assertEqual(res.get("decision"), "ask")
+        self.assertIn("Unparseable command syntax", res.get("reason", ""))
+        self.assertIn("auditId", res)
+
     async def test_post_tool_use_success(self):
         payload = {
             "toolCall": {"name": "run_command", "args": {"CommandLine": "pytest"}},

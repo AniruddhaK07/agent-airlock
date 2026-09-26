@@ -250,6 +250,21 @@ class IPCRouter:
             }
             self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
             return res
+        elif policy_result.rule_id == "unparseable-command-syntax":
+            latency_ms = (time.time() - t_start) * 1000.0
+            res = {
+                "version": version,
+                "status": "fail_closed",
+                "decision": "ask",
+                "reason": policy_result.reason,
+                "ruleId": policy_result.rule_id,
+                "permissionOverrides": [],
+                "overwrite": None,
+                "auditId": audit_id,
+                "workspaceRoot": ws_state.workspace_root,
+            }
+            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            return res
         else:
             # PolicyVerdict.AMBIGUOUS:
             # 1. Circuit Breaker: check for repeating failure loops before probabilistic gating

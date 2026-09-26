@@ -403,5 +403,28 @@ class TestHardPolicyEngine(unittest.TestCase):
         res = engine.evaluate("run_command", {"CommandLine": "git status"})
         self.assertEqual(res.verdict, PolicyVerdict.ALLOW)
 
+    def test_unparseable_syntax_fail_closed(self):
+        """
+        Commands with unbalanced quotes or malformed syntax must fail closed (deny/ask),
+        not silently pass through to allow on raw-string regex matching alone.
+        """
+        # 1. Unbalanced double quotes on what would otherwise match hard allow
+        res1 = self.engine.evaluate("run_command", {"CommandLine": 'git status "unclosed_string'})
+        self.assertNotEqual(res1.verdict, PolicyVerdict.ALLOW, "Unbalanced quote must not be allowed!")
+        self.assertEqual(res1.verdict, PolicyVerdict.AMBIGUOUS)
+        self.assertEqual(res1.rule_id, "unparseable-command-syntax")
+        self.assertIn("shlex parse error", res1.reason)
+
+        # 2. Unbalanced single quote on what would otherwise match hard allow
+        res2 = self.engine.evaluate("run_command", {"CommandLine": "ls 'unclosed_single_quote"})
+        self.assertNotEqual(res2.verdict, PolicyVerdict.ALLOW, "Unbalanced single quote must not be allowed!")
+        self.assertEqual(res2.verdict, PolicyVerdict.AMBIGUOUS)
+        self.assertEqual(res2.rule_id, "unparseable-command-syntax")
+
+        # 3. Destructive command with unclosed quote must still be caught by hard deny layer
+        res3 = self.engine.evaluate("run_command", {"CommandLine": 'rm -rf / "unclosed'})
+        self.assertEqual(res3.verdict, PolicyVerdict.DENY, "Destructive command with unclosed quote must be hard denied!")
+
 if __name__ == "__main__":
     unittest.main()
+

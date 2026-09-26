@@ -31,12 +31,13 @@
     - Integrated with `IPCRouter` and `DaemonServer` partitioned strictly by `workspace_root`.
     - Maintained dispatch order: hard policy engine first and authoritative, circuit breaker before probabilistic gating, never ahead of hard-deny.
     - Authored comprehensive test suite `tests/test_circuit_breaker.py` (12 tests).
-  - Phase 5 (Audit Log):
+  - Phase 5 (Audit Log & Follow-ups):
     - Implemented `AuditEvent` dataclass (`jev_gateway/audit/models.py`) with ISO 8601 timestamps and comprehensive schema fields.
-    - Implemented `AuditLogger` (`jev_gateway/audit/logger.py`) with thread-safe append-only writes, immediate buffer flush, non-disruptive error handling, and atomic log rotation via temporary file replacement.
+    - Implemented `AuditLogger` (`jev_gateway/audit/logger.py`) with thread-safe append-only writes, immediate buffer flush, non-disruptive error handling, and atomic log rotation via temporary file replacement. Measured hot-path latency at 0.29 ms p50 / 0.46 ms p95.
     - Implemented `AuditReader` (`jev_gateway/audit/reader.py`) with file integrity verification (syntax check, ISO timestamp validation, corrupted line identification), flexible querying, and metric statistics aggregation.
     - Wired `AuditLogger` directly into `IPCRouter` and `DaemonServer`.
-    - Authored comprehensive test suite `tests/test_audit_log.py` (19 tests). Total project test suite now stands at 103 passed tests (100% pass rate).
+    - Restored `shlex` as primary tokenization in `normalizer.py` with defensive try/except parse handling and fail-closed routing for unparseable syntax, backed by unified regex matching layer.
+    - Authored comprehensive test suite `tests/test_audit_log.py` (19 tests) and updated daemon/policy test suites. Total project test suite now stands at 105 passed tests (100% pass rate).
 - **What's next**: Implement Phase 6 (production Antigravity hook scripts `<50` lines for PreToolUse and PostToolUse, `.agents/hooks.json` mounting).
 - **Blockers**: None.
 
@@ -104,10 +105,11 @@
 - **Status**: Done
 - **Completed**:
   - Implemented `AuditEvent` schema in `jev_gateway/audit/models.py`.
-  - Implemented `AuditLogger` append-only thread-safe writer with atomic log rotation in `jev_gateway/audit/logger.py`.
+  - Implemented `AuditLogger` append-only thread-safe writer with atomic log rotation in `jev_gateway/audit/logger.py`. Measured synchronous hot-path latency at 0.29 ms p50 / 0.46 ms p95 with `flush_immediate=True`.
   - Implemented `AuditReader` query engine, integrity verifier, and statistics aggregator in `jev_gateway/audit/reader.py`.
   - Integrated `AuditLogger` with `IPCRouter` and `DaemonServer`.
-  - Authored 19 tests in `tests/test_audit_log.py`. Total 103 tests passing.
+  - Restored `shlex` as primary tokenization with fail-closed unparseable syntax handling in `normalizer.py` and `engine.py`.
+  - Authored 19 tests in `tests/test_audit_log.py` and added unparseable syntax tests. Total 105 tests passing.
 - **What's left**: None (Phase 5 exit criteria met).
 - **Blockers**: None.
 

@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from jev_gateway.policy.models import PolicyVerdict, PolicyRule, PolicyResult
 from jev_gateway.policy.default_rules import get_default_rules
 from jev_gateway.policy.normalizer import (
+    tokenize_command,
     normalize_command,
     strip_all_quotes,
     has_command_chaining,
@@ -52,16 +53,28 @@ class HardPolicyEngine:
                 reason="Empty command line has no side effects."
             )
 
+        # Primary tokenization using shlex
+        tokens, parse_error = tokenize_command(raw_cmd)
+        shlex_cmd = " ".join(tokens) if tokens else ""
+
         norm_cmd = normalize_command(raw_cmd)
         strip_cmd = strip_all_quotes(norm_cmd)
         is_chained = has_command_chaining(raw_cmd)
         sub_cmds = split_command_chain(raw_cmd)
 
+        # Candidates to check: {raw_cmd, norm_cmd, strip_cmd} unified regex matching
+        # as an additional layer on top of shlex output
         candidates_to_check = {raw_cmd, norm_cmd, strip_cmd}
+        if shlex_cmd:
+            candidates_to_check.add(shlex_cmd)
+
         for sc in sub_cmds:
             candidates_to_check.add(sc)
             candidates_to_check.add(normalize_command(sc))
             candidates_to_check.add(strip_all_quotes(normalize_command(sc)))
+            sc_tokens, _ = tokenize_command(sc)
+            if sc_tokens:
+                candidates_to_check.add(" ".join(sc_tokens))
 
         # -------------------------------------------------------------
         # STEP 1: Hard Deny Evaluation (Zero False Negatives)
@@ -83,6 +96,19 @@ class HardPolicyEngine:
                     )
 
         # -------------------------------------------------------------
+        # STEP 1.5: Parse Error Fail-Closed
+        # If shlex tokenization failed, do NOT fall through to weaker regex-only matching.
+        # Route to AMBIGUOUS / ask rather than allowing an unparseable command.
+        # -------------------------------------------------------------
+        if parse_error:
+            return PolicyResult(
+                verdict=PolicyVerdict.AMBIGUOUS,
+                rule_id="unparseable-command-syntax",
+                reason=f"Unparseable command syntax or unclosed quotation ({parse_error}); failing closed to human confirmation.",
+                is_chained=is_chained,
+            )
+
+        # -------------------------------------------------------------
         # STEP 2: Hard Allow Evaluation (Strictly side-effect free)
         # -------------------------------------------------------------
         # Chained commands or subshells are NEVER permitted in Hard Allow
@@ -97,9 +123,11 @@ class HardPolicyEngine:
             if not self._rule_applies_to_tool(rule, "run_command"):
                 continue
 
-            if rule.compiled.search(norm_cmd):
+            # Hard allow must match shlex_cmd or norm_cmd
+            target_to_match = shlex_cmd or norm_cmd
+            if rule.compiled.search(target_to_match):
                 # Extra check: make sure the command does not touch secret files
-                if self._touches_credentials(norm_cmd):
+                if self._touches_credentials(target_to_match) or self._touches_credentials(norm_cmd):
                     return PolicyResult(
                         verdict=PolicyVerdict.DENY,
                         rule_id="deny-credentials-in-command",

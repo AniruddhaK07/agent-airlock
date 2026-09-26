@@ -2,8 +2,9 @@
 Command normalization and anti-evasion helpers for the Hard Policy Engine.
 """
 
+import shlex
 import re
-from typing import List
+from typing import List, Tuple, Optional
 
 # Regex to detect command chaining and subshell execution
 CHAINING_PATTERN = re.compile(
@@ -12,6 +13,25 @@ CHAINING_PATTERN = re.compile(
 
 # Regex to detect command substitution specifically
 SUBSHELL_PATTERN = re.compile(r'(?:\$\(([^\)]*)\)|\`([^\`]*)\`)')
+
+def tokenize_command(cmd: str) -> Tuple[List[str], Optional[str]]:
+    """
+    Primary command tokenization path using standard shlex.
+    Wraps shlex.split in try/except ValueError and any other parse exceptions.
+    Returns:
+        (tokens, None) on successful parsing.
+        ([], error_message) on parse failure (e.g. unclosed quotation or escape errors).
+    """
+    if not cmd or not cmd.strip():
+        return [], None
+
+    try:
+        tokens = shlex.split(cmd, posix=True)
+        return tokens, None
+    except ValueError as e:
+        return [], f"shlex parse error: {e}"
+    except Exception as e:
+        return [], f"shlex tokenization error: {e}"
 
 def normalize_command(cmd: str) -> str:
     """
