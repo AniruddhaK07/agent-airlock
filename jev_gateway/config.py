@@ -54,6 +54,7 @@ class CircuitBreakerConfig(BaseModel):
     hash_window: int = 3
     similarity_threshold: float = 0.80
     noul_confidence: float = 0.80
+    min_repeat_prob: float = 0.60
     break_action: str = "force_ask"
 
 class AuditConfig(BaseModel):

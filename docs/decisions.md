@@ -338,18 +338,37 @@ Context: Autoregressive agent loops often get trapped attempting repetitive fail
 Decision:
 1. Two-Tier Detection Architecture:
    - **Tier 1 (Hash Pre-Filter, 0 ms)**: Normalizes ephemeral tokens (timestamps, PIDs, memory addresses, line/col numbers) and computes SHA-256 digests. Exact repeats of previously failed commands in the rolling window ($N=3$) trip immediately to `force_ask`.
-   - **Tier 2 (Noul Escalation, ~38 ms)**: When surface text differs but structural similarity $\ge 0.80$, the breaker queries local Laya's `noul` primitive (`"Is this command semantically repeating the failed operation...?"`). If Noul confirms semantic repetition ($\ge 0.80$ confidence or $\ge 0.35$ probability), execution is halted with `force_ask`.
+   - **Tier 2 (Noul Escalation, ~38 ms)**: When surface text differs but structural similarity $\ge 0.80$, the breaker queries local Laya's `noul` primitive (`"Is this command semantically repeating the failed operation...?"`). If Noul confirms affirmative semantic repetition (`noul_prob >= 0.60` AND `noul_conf >= 0.80`), execution is halted with `force_ask`.
 2. Authoritative Dispatch Precedence:
    - Hard Policy Engine runs first and authoritative: hard-deny commands (`rm -rf /`, fork bombs) are always denied with zero exceptions; hard-allow read-only commands (`ls`, `git status`) are permitted immediately.
    - Circuit Breaker only gates ambiguous operations before probabilistic routing, never ahead of hard-deny.
 3. Workspace State Isolation:
    - `CircuitBreaker` instances are partitioned strictly per normalized `workspace_root`. Repeated failures in Project A never pollute or halt actions in Project B.
 4. Comprehensive Test Coverage:
-   - Authored `tests/test_circuit_breaker.py` (11 tests) verifying hashing, ephemeral normalization, exact repeat halts, non-repeating command pass-through, Noul escalation, workspace isolation, hard-deny precedence, and end-to-end daemon IPC loop halting. Total test suite: 83 tests passing.
+   - Authored `tests/test_circuit_breaker.py` (12 tests) verifying hashing, ephemeral normalization, exact repeat halts, non-repeating command pass-through, Noul escalation, workspace isolation, hard-deny precedence, and end-to-end daemon IPC loop halting. Total test suite: 84 tests passing.
 
 Rejected:
 - Global unpartitioned failure history (violates workspace isolation).
 - Querying LLM/Laya on every single failure check (wastes ~38 ms on non-repeating commands; Tier 1 hash filter runs first in 0 ms).
+Model: Flash
+
+## [Phase 4 Clarification] Noul Escalation Trip Logic and Fork-Bomb Normalization Scope — 2026-09-27
+Context: User requested clarification and review on two Phase 4 architectural mechanisms prior to Phase 5:
+  1. The trip condition for Noul escalation in `breaker.py`, where `conf >= 0.80 or noul >= 0.35` was mathematically defective.
+  2. The normalization pipeline for the generalized fork-bomb backreference regex and whether it utilizes `shlex`.
+
+Findings & Decisions:
+1. Noul Escalation Trip Condition Correction:
+   - **Flaw in Prior Logic**: The prior condition `if noul_conf >= self.config.noul_confidence or noul_prob >= 0.35:` was unsound. In Laya's Noul binary classification head, `noul` outputs the probability of the affirmative class (`P(is_semantic_repeat)`). A value of `0.35` indicates a 65% probability that the action is *not* a repeat. Concurrently, `noul_conf` reflects the model's overall prediction certainty—high confidence on a negative prediction (e.g. `noul_prob = 0.35, conf = 0.88`) means the model is *confidently rejecting* repetition. Under the old `or` condition, this confidently non-repeating command would have falsely tripped the circuit breaker.
+   - **Corrected Semantic Logic**: Halting a fix loop requires affirmative repetition with high certainty:
+     $$\text{trip} \iff (\text{noul\_prob} \ge \text{min\_repeat\_prob}) \land (\text{noul\_conf} \ge \text{noul\_confidence})$$
+     Defaults configured in `CircuitBreakerConfig`: `min_repeat_prob = 0.60`, `noul_confidence = 0.80`.
+   - **Non-Trip Handling**: If Noul evaluates the candidate and fails to meet both criteria (i.e. model leans negative or uncertain), the circuit breaker explicitly permits execution (`is_tripped=False`, `action="none"`) without falling back to string heuristic tripping. Fallback to high string similarity ($\ge 0.85$) is strictly reserved for when Laya is absent or raises an execution exception.
+   - **Regression Verification**: Added `test_noul_rejection_when_confident_not_repeat` in `tests/test_circuit_breaker.py` testing candidate `"npm install pkg-name --prod"` with `noul=0.35, conf=0.88` against prior failure `"npm install pkg-name"`. Verified that Tier 1 escalates to Noul and Noul's confident non-repeat decision correctly prevents breaker tripping.
+
+2. Fork-Bomb Pattern Normalization Scope:
+   - **Deliberate Exclusion of `shlex`**: Python's `shlex.split()` is deliberately avoided throughout the entire policy normalization pipeline (`jev_gateway/policy/normalizer.py`). Shell function syntax (`:(){ :|:& };:`) and unclosed quotes/syntax errors in raw command inputs cause `shlex.split()` to raise fatal `ValueError: No closing quotation` exceptions. Catching or falling back on `shlex` exceptions risks either unhandled crashes or fail-open vulnerabilities. Custom regex-based sanitization (`normalize_command`) is used instead to strip quotes and caret escapes while preserving structural integrity.
+   - **Pre-Fragmentation Unified Matching**: In `jev_gateway/policy/engine.py`, candidate strings checked against deny rules include the set `{raw_cmd, norm_cmd, strip_cmd}` as well as individual chained sub-commands (`sub_cmds`). Shell chaining operators (`;`, `|`, `&`) are fundamental components of the recursive fork bomb syntax `:(){ :|:& };:`. If command chain splitting occurred before pattern evaluation, the function definition would be fragmented into disjoint fragments (`:(){ :`, `:`, `}`, `:`), destroying the contiguous recursive structure and bypassing detection. Evaluating the generalized backreference regex against the unified candidate strings (`raw_cmd`, `norm_cmd`, `strip_cmd`) ensures deterministic denial before and independent of chain fragmentation.
 Model: Flash
 
 

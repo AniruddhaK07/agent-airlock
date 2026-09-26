@@ -187,6 +187,50 @@ class TestCircuitBreakerLogic(unittest.TestCase):
         self.assertIn("Laya Noul", res.reason)
         mock_laya.agent.predict.assert_called_once()
 
+    def test_noul_rejection_when_confident_not_repeat(self):
+        """
+        Regression test: When Laya Noul evaluates that an action is NOT a repeat
+        (e.g., noul_prob=0.35 leaning 'not a repeat', with high confidence=0.88),
+        the circuit breaker must NOT trip.
+
+        Under the old buggy condition (conf >= 0.80 OR noul >= 0.35), this would
+        have falsely tripped because conf >= 0.80 was satisfied even though the model
+        confidently answered NO.
+        Under the corrected condition (noul_prob >= 0.60 AND noul_conf >= 0.80),
+        the breaker correctly permits execution without tripping.
+        """
+        mock_laya = MagicMock()
+        mock_laya.agent.predict.return_value = {
+            "answers": {
+                "is_semantic_repeat": {
+                    "type": "noul",
+                    "noul": 0.35,        # 65% probability NOT a repeat
+                    "confidence": 0.88,  # Confidently not a repeat
+                }
+            }
+        }
+        breaker = CircuitBreaker(
+            workspace_root="/test/workspace",
+            config=self.cfg,
+            local_laya_client=mock_laya,
+        )
+
+        breaker.record_failure(
+            tool_name="run_command",
+            tool_args={"CommandLine": "npm install pkg-name"},
+            error="E404 Not Found",
+        )
+
+        candidate = "npm install pkg-name --prod"
+        res = breaker.check_pre_tool(
+            tool_name="run_command",
+            tool_args={"CommandLine": candidate},
+        )
+
+        self.assertFalse(res.is_tripped, "Breaker tripped despite Noul answering NOT a repeat!")
+        self.assertEqual(res.action, "none")
+        mock_laya.agent.predict.assert_called_once()
+
     def test_workspace_isolation(self):
         """Failures in Workspace A do not trip the circuit breaker in Workspace B."""
         breaker_a = CircuitBreaker(workspace_root="/projects/repo_a", config=self.cfg)

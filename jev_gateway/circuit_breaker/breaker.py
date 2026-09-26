@@ -186,11 +186,12 @@ class CircuitBreaker:
                     candidate_target, most_similar_sig.command_or_target, noul_prob, noul_conf
                 )
 
-                # If Noul confirms semantic repetition above threshold
-                if noul_conf >= self.config.noul_confidence or noul_prob >= 0.35:
+                # Semantic confirmation requires affirmative repeat probability AND high confidence
+                min_prob = getattr(self.config, "min_repeat_prob", 0.60)
+                if noul_prob >= min_prob and noul_conf >= self.config.noul_confidence:
                     trip_reason = (
                         f"Circuit breaker tripped: Semantic repeat loop confirmed by Laya Noul "
-                        f"(prob={noul_prob:.2f}, conf={noul_conf:.2f} >= {self.config.noul_confidence}) "
+                        f"(repeat_prob={noul_prob:.2f} >= {min_prob:.2f}, conf={noul_conf:.2f} >= {self.config.noul_confidence}) "
                         f"on '{candidate_target}' (similarity={best_sim:.2f} to prior failure "
                         f"'{most_similar_sig.command_or_target}'). Halting fix loop."
                     )
@@ -203,10 +204,23 @@ class CircuitBreaker:
                         noul_confidence=noul_conf,
                         history_summary=history_summary,
                     )
+                else:
+                    # Laya Noul evaluated the candidate and did not confirm repeat
+                    logger.info(
+                        "Laya Noul rejected repeat confirmation for '%s' (repeat_prob=%.2f, conf=%.2f); permitting execution.",
+                        candidate_target, noul_prob, noul_conf
+                    )
+                    return CircuitBreakerResult(
+                        is_tripped=False,
+                        action="none",
+                        repeat_count=len(similar_failures),
+                        noul_confidence=noul_conf,
+                        history_summary=history_summary,
+                    )
             except Exception as e:
                 logger.warning("Local Laya Noul evaluation encountered error: %s; falling back to hash filter.", e)
 
-        # Fallback if Laya is absent: trip if high structural similarity (>= 0.85)
+        # Fallback ONLY when Laya is absent or encountered an error: trip if high structural similarity (>= 0.85)
         if best_sim >= 0.85:
             trip_reason = (
                 f"Circuit breaker tripped: Near-identical command pattern detected "
