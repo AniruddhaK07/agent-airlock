@@ -1,7 +1,7 @@
 # Project Progress
 
-## Current Phase: Phase 7 — Test/eval scenario harness
-- **Status**: Phase 6 (Antigravity Hook Integration) Complete; Queued for Scenario Test Suite (Phase 7)
+## Current Phase: Phase 8 — Docs & release prep
+- **Status**: Phase 7 (Test/eval scenario harness) Complete; Queued for Docs & Release Prep (Phase 8)
 - **Completed**:
   - Phase 0 (Bootstrap): Baseline documents initialized and verified.
   - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader (18 tests, 130 subtests, 0 false negatives). Hardened with generalized fork-bomb detection.
@@ -38,12 +38,22 @@
     - Wired `AuditLogger` directly into `IPCRouter` and `DaemonServer`.
     - Restored `shlex` as primary tokenization in `normalizer.py` with defensive try/except parse handling and fail-closed routing for unparseable syntax, backed by unified regex matching layer.
     - Authored comprehensive test suite `tests/test_audit_log.py` (19 tests) and updated daemon/policy test suites. Total project test suite now stands at 105 passed tests (100% pass rate).
-  - Phase 6 (Antigravity Hook Integration):
-    - Authored production `pre_tool_use.py` (41 lines) and `post_tool_use.py` (39 lines), strictly under the 50-line limit.
+  - Phase 6 (Antigravity Hook Integration & Live Verification):
+    - Authored production `pre_tool_use.py` (35 lines) and `post_tool_use.py` (28 lines), strictly under the 50-line limit and enforcing strict protojson compliance.
     - Integrated automatic repository root self-resolution into `sys.path` and created `pyproject.toml` with editable package install (`pip install -e .`).
     - Implemented `installer.py` supporting dynamic config generation with absolute script paths and safe `.agents/hooks.json` merging.
-    - Authored comprehensive test suite `tests/test_hooks.py` (10 tests) verifying line-counts, schema, stdin/stdout compliance, and end-to-end daemon IPC gating. Total project test suite now stands at 115 passed tests (100% pass rate).
-- **What's next**: Implement Phase 7 (Test/eval scenario harness for scripted safe, dangerous, ambiguous, repeating-failure, and offline daemon scenarios).
+    - Removed `.agents/` from git tracking and added to `.gitignore`.
+    - Confirmed live Antigravity CLI behaviors: `allow` executes without user confirmation prompts, `deny` hard-blocks execution, `force_ask` invalidates permission cache, and hook errors strictly halt execution.
+    - Authored comprehensive test suite `tests/test_hooks.py` (10 tests).
+  - Phase 7 (Test/eval scenario harness):
+    - Authored `tests/test_scenarios.py` with 5 multi-turn end-to-end operational scenarios:
+      1. Safe Developer Routine (git status, ls, cat package.json, git log) allowed with zero delay.
+      2. Dangerous / Adversarial Attacks (rm -rf /, curl|bash, fork bombs, credentials, .env) hard-denied deterministically.
+      3. Ambiguous Operations (high-blast auto-deny, moderate risk ask, bounded safe allow) routed to ML safety rubric.
+      4. Runaway Fix-Loop (npm install repeating errors across 3 steps) caught by circuit breaker tripping to force_ask.
+      5. Offline Daemon Resilience strictly failing closed to human confirmation.
+    - Total test suite stands at 120 tests and 137 subtests passing with 100% pass rate.
+- **What's next**: Implement Phase 8 (Documentation, README with architecture diagrams, configuration examples, and release preparation).
 - **Blockers**: None.
 
 ---
@@ -130,9 +140,16 @@
 - **Blockers**: None.
 
 ## Phase 7 — Test/eval harness
-- **Status**: Not started
-- **Completed**: None.
-- **What's left**: End-to-end scenario test suite (safe, dangerous, ambiguous, repeated-failure, and Jev-down offline tests).
+- **Status**: Done
+- **Completed**:
+  - Authored `tests/test_scenarios.py` implementing 5 realistic operational scenarios:
+    - `test_scenario_safe_developer_routine`: benign multi-step workflow allowed with zero delay.
+    - `test_scenario_dangerous_adversarial_attacks`: root wipe, pipe-to-shell, fork bomb, credential reads hard-denied deterministically.
+    - `test_scenario_ambiguous_operations_routed_to_laya`: ML safety airlock rubric routing (high blast auto-deny, moderate risk ask, bounded safe allow).
+    - `test_scenario_runaway_fix_loop_circuit_breaker_tripped`: repeating tool error fix loops caught by circuit breaker tripping to force_ask.
+    - `test_scenario_offline_daemon_strictly_fails_closed`: daemon unavailability strictly fails closed to human confirmation.
+  - Project test suite: 120 passed tests, 137 subtests (100% pass rate).
+- **What's left**: None (Phase 7 exit criteria met).
 - **Blockers**: None.
 
 ## Phase 8 — Docs & release prep

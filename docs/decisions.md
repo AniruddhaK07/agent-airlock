@@ -443,6 +443,24 @@ Decisions:
    - **Portability & Repository Decoupling**: Confirmed the workspace path (`sva-harness`) is never hardcoded in package code (0 matches in `git grep`). Untracked `.agents/hooks.json` from git and added `.agents/` to `.gitignore`. `installer.py` dynamically resolves Python executable and script paths via `Path(__file__)` on any host system.
 Model: Flash
 
+## [Phase 7] End-to-End Scenario Test Harness & Operational Validation — 2026-09-27
+Context: Phase 7 provides comprehensive operational scenario validation simulating multi-turn developer interactions, hostile adversarial attacks, borderline ambiguous commands, runaway error fix loops, and offline crash scenarios.
+
+Decisions & Validation:
+1. Scenario Suite Composition (`tests/test_scenarios.py`):
+   - **Scenario 1 (Benign / Safe Developer Workflow)**: Simulated 4-step workflow (`git status`, `ls -la`, `cat package.json`, `git log`). Confirmed: instant zero-model hard-allow, <2ms dispatch, clean audit logging across all steps.
+   - **Scenario 2 (Dangerous / Adversarial Attacks)**: Injected root wipes (`rm -rf / --no-preserve-root`), pipe-to-shell (`curl|bash`), fork bombs (`:(){ :|:& };:`), and credential exfiltration (`cat ~/.aws/credentials`, `.env`). Confirmed: 100% deterministic block rate with zero model calls.
+   - **Scenario 3 (Ambiguous / ML Safety Airlock Routing)**: Verified all 3 branches of the calibrated safety rubric:
+     - Catastrophic blast radius ($\ge 4.0$) auto-denies (`deny`).
+     - Moderate risk / low reversibility routes to human confirmation (`ask`).
+     - Bounded safe actions route to permitted execution (`allow`).
+   - **Scenario 4 (Runaway Fix-Loop Circuit Breaker)**: Simulated 3 consecutive failed package installation attempts. The 4th attempt was caught by the circuit breaker and tripped immediately into `force_ask` with the full error history summary, halting the fix loop.
+   - **Scenario 5 (Offline Daemon Fail-Closed Resilience)**: Verified that when the daemon server is completely stopped, all requests fail closed strictly to `ask` within the timeout budget, never permitting blind execution.
+
+2. Test Suite Status:
+   - Full suite passes 120 tests and 137 subtests with 100% pass rate.
+Model: Flash
+
 
 
 
