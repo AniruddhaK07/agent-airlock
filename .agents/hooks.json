@@ -1,0 +1,29 @@
+{
+  "jev-safety-gate": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\ASUS\\miniconda3\\envs\\torch_env\\python.exe C:\\Users\\ASUS\\Desktop\\A\\projects\\sva-harness\\jev_gateway\\hooks\\pre_tool_use.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\Users\\ASUS\\miniconda3\\envs\\torch_env\\python.exe C:\\Users\\ASUS\\Desktop\\A\\projects\\sva-harness\\jev_gateway\\hooks\\post_tool_use.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
