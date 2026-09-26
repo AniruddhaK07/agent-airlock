@@ -17,24 +17,14 @@ from jev_gateway.hooks.stub_client import StubHookClient
 def main():
     try:
         raw_in = sys.stdin.read()
-        if not raw_in or not raw_in.strip():
-            sys.stdout.write(json.dumps({
-                "version": "1.0",
-                "status": "ignored",
-                "reason": "Empty PostToolUse input received.",
-            }) + "\n")
-            return
-
-        payload = json.loads(raw_in)
-        client = StubHookClient(enable_autospawn=False)
-        res = client.send_request("PostToolUse", payload)
-        sys.stdout.write(json.dumps(res) + "\n")
-    except Exception as e:
-        sys.stdout.write(json.dumps({
-            "version": "1.0",
-            "status": "error",
-            "reason": f"PostToolUse hook exception: {e}",
-        }) + "\n")
+        if raw_in and raw_in.strip():
+            payload = json.loads(raw_in)
+            client = StubHookClient(enable_autospawn=False)
+            client.send_request("PostToolUse", payload)
+    except Exception:
+        pass
+    finally:
+        sys.stdout.write("{}\n")
 
 if __name__ == "__main__":
     main()

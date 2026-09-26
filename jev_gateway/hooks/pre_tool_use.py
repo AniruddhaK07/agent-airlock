@@ -18,25 +18,19 @@ def main():
     try:
         raw_in = sys.stdin.read()
         if not raw_in or not raw_in.strip():
-            sys.stdout.write(json.dumps({
-                "version": "1.0",
-                "status": "fail_closed",
-                "decision": "ask",
-                "reason": "Empty hook input received; failing closed to human confirmation.",
-            }) + "\n")
+            sys.stdout.write(json.dumps({"decision": "ask", "reason": "Empty hook input"}) + "\n")
             return
 
         payload = json.loads(raw_in)
         client = StubHookClient()
         res = client.send_request("PreToolUse", payload)
-        sys.stdout.write(json.dumps(res) + "\n")
+        out = {"decision": res.get("decision", "ask")}
+        for field in ("reason", "permissionOverrides", "overwrite"):
+            if res.get(field):
+                out[field] = res[field]
+        sys.stdout.write(json.dumps(out) + "\n")
     except Exception as e:
-        sys.stdout.write(json.dumps({
-            "version": "1.0",
-            "status": "fail_closed",
-            "decision": "ask",
-            "reason": f"PreToolUse hook exception ({e}); failing closed to human confirmation.",
-        }) + "\n")
+        sys.stdout.write(json.dumps({"decision": "ask", "reason": f"PreToolUse exception ({e})"}) + "\n")
 
 if __name__ == "__main__":
     main()

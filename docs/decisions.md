@@ -434,6 +434,13 @@ Decisions:
 4. Test Suite and Verification:
    - Implemented `tests/test_hooks.py` with 10 comprehensive tests covering line-count bounds, schema generation, installer merging, stdin/stdout empty and malformed input handling, and end-to-end live daemon policy dispatch (`allow`, `deny`, `auditId`).
    - Total test suite now stands at 115 tests and 137 subtests passing with 100% pass rate.
+
+5. Live Behavioral Findings & Safety-Relevant Verification:
+   - **Live "allow" Execution**: Confirmed empirically against the live Antigravity CLI agent loop. When `PreToolUse` returns `{"decision": "allow"}`, Antigravity CLI executes the command immediately with **zero user-facing confirmation prompt**. It does not surface any manual prompt, confirming the primary architecture goal of non-disruptive automated gating for safe operations.
+   - **Live "deny" Blocking**: When `PreToolUse` returns `{"decision": "deny", "reason": "..."}`, Antigravity CLI **hard-blocks tool execution immediately**. It surfaces an execution error/abort to the model without executing the tool and without presenting the user an interactive prompt to accidentally bypass it.
+   - **Live "force_ask" vs "ask" Behavior**: Standard `"ask"` presents an interactive prompt but honors Antigravity's session "Always Allow" permission cache. When `"force_ask"` is returned, Antigravity **actively bypasses/invalidates the cached permission**, guaranteeing a visible manual confirmation prompt to the operator. This ensures high-risk loop breaking cannot be silently bypassed by an existing permission cache.
+   - **Strict Protojson Contract Discovery**: Discovered live that Antigravity parses hook stdout using strict Go `protojson` without `DiscardUnknown`. Emitting internal dictionary fields (e.g. `version`, `status`, `auditId`) results in an unmarshaling error (`unknown field "version"`). Refactored `pre_tool_use.py` and `post_tool_use.py` to strictly emit `{decision, reason, permissionOverrides, overwrite}` and `{}` respectively.
+   - **Portability & Repository Decoupling**: Confirmed the workspace path (`sva-harness`) is never hardcoded in package code (0 matches in `git grep`). Untracked `.agents/hooks.json` from git and added `.agents/` to `.gitignore`. `installer.py` dynamically resolves Python executable and script paths via `Path(__file__)` on any host system.
 Model: Flash
 
 

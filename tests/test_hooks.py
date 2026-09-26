@@ -82,7 +82,6 @@ class TestHookStdinStdoutCompliance(unittest.TestCase):
             output = mock_stdout.getvalue().strip()
             self.assertTrue(output)
             parsed = json.loads(output)
-            self.assertEqual(parsed.get("status"), "fail_closed")
             self.assertEqual(parsed.get("decision"), "ask")
 
     def test_pre_tool_use_malformed_json_fails_closed(self):
@@ -91,7 +90,6 @@ class TestHookStdinStdoutCompliance(unittest.TestCase):
             output = mock_stdout.getvalue().strip()
             self.assertTrue(output)
             parsed = json.loads(output)
-            self.assertEqual(parsed.get("status"), "fail_closed")
             self.assertEqual(parsed.get("decision"), "ask")
 
     def test_post_tool_use_empty_stdin_ignored(self):
@@ -100,7 +98,7 @@ class TestHookStdinStdoutCompliance(unittest.TestCase):
             output = mock_stdout.getvalue().strip()
             self.assertTrue(output)
             parsed = json.loads(output)
-            self.assertEqual(parsed.get("status"), "ignored")
+            self.assertEqual(parsed, {})
 
 class TestHookSubprocessExecutionWithDaemon(unittest.IsolatedAsyncioTestCase):
     """End-to-end integration: executing the hook scripts via subprocess against a live DaemonServer."""
