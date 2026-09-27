@@ -229,11 +229,17 @@ pytest -v
 ```
 
 Test coverage includes:
-- **Policy Engine**: 35+ evasion patterns, compound command splitting, regex normalization.
-- **Daemon & IPC**: Dual-transport auto-negotiation, bearer token auth, stale PID recycling recovery, concurrent cold-start auto-spawns.
+- **Policy Engine**: Tier-0 anti-tamper protection, 40+ evasion patterns, PowerShell base64 decoding, subshell unwrapping, compound command splitting, regex normalization.
+- **Daemon & IPC**: Dual-transport auto-negotiation, bearer token auth, stale PID recycling recovery, POSIX 0600 socket lockdown, concurrent cold-start auto-spawns.
 - **Circuit Breaker**: Repeating failure loops, ephemeral token normalization, Noul semantic confirmation.
 - **Antigravity Hooks**: Strict protojson schema compliance, < 50 lines constraint, fail-closed stdin parsing.
 - **End-to-End Scenarios**: 5 realistic operational scenarios covering safe, dangerous, ambiguous, and runaway workflows.
+
+---
+
+## 🗺️ Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for prioritized upcoming milestones, including CPU quantization, LRU inference caching, higher-order loop detection, and policy dry-run tooling.
 
 ---
 

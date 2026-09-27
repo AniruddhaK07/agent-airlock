@@ -595,3 +595,22 @@ Context: Following the initial gent-airlock renaming sweep, two scope correctio
      - Reasoning: Removing jev-daemon and jev-hooks script aliases. Because this project has not yet shipped publicly, no existing external users or workflows depend on legacy entrypoints. Retaining two differently-named CLI commands for the same tool introduces user confusion without providing any real-world backward compatibility benefit.
      - Action: Retained strictly canonical commands: gent-airlock-daemon and gent-airlock-hooks.
 Model: Flash
+
+## [Release v1.1] Post-v1 Hardening: Anti-Tamper Runtime Protection, Encoded Command Evasion, and POSIX Socket Security — 2026-09-27
+Context: Following the initial v1 release (`agent-airlock-v1`), targeted hardening was implemented across three security surfaces without modifying existing deterministic rules or touching developer workflows:
+  1. Tier-0 Anti-Tamper Runtime Protection:
+     - Problem: Autonomous agents with shell or file access could theoretically disable the airlock by overwriting `.agents/hooks.json`, mutating active policy files (`*policy.yaml`, `*policy.json`), or removing runtime daemon artifacts (`*.sock`, `*.pid`, `*.token`).
+     - Decision: Implemented a Tier-0 rule in `HardPolicyEngine.evaluate()` that runs before any other hard-allow or hard-deny evaluation. Any file write (`write_to_file`, `replace_file_content`) or shell command (`run_command` with `>`, `>>`, `Out-File`, `Set-Content`, `tee`, or mutation verbs `rm`, `del`, `Remove-Item`) targeting protected runtime files is unconditionally denied with `rule_id="deny-airlock-runtime-tampering"`.
+     - Explicit Scope Limit: Deliberately excluded `agent_airlock/` source code and Python files (`*.py`) from anti-tamper protection so active pair programming and agent self-development within Antigravity remain completely unhindered. Verified with regression tests.
+  2. PowerShell Base64 Encoded-Command & Subshell Evasion Hardening:
+     - Problem: Destructive payloads wrapped in `-EncodedCommand` (UTF-16LE base64) or subshell/interpreter wrappers (`bash -c`, `cmd.exe /c`, `python -c "os.system(...)"`, `Invoke-Expression` / `iex`, `wsl <cmd>`) could attempt to bypass outer command line pattern matching.
+     - Decision: Added recursive subshell and encoded payload unwrapping in `agent_airlock.policy.normalizer`. Invocations with `-enc` / `-EncodedCommand` are decoded (supporting UTF-16LE with UTF-8 fallback) and unwrapped sub-commands are routed strictly through the established shlex tokenization and normalizer before matching against deny rules. Any wrapped or encoded execution is disqualified from hard-allow (`is_chained = True`).
+  3. POSIX Unix Domain Socket Permission Lockdown:
+     - Problem: On Linux and macOS, newly bound Unix domain sockets default to the process umask, potentially exposing IPC to other local users.
+     - Decision: Added `os.chmod(self.socket_path, 0o600)` immediately after binding the Unix domain socket in `DaemonServer._start_unix_server()`, establishing parity with Windows NTFS ACL restrictions on the bearer token file.
+  4. Backlog Prioritization (`ROADMAP.md`):
+     - Authored `ROADMAP.md` cataloging prioritized future enhancements:
+       - High Priority: CPU Quantization (INT8/ONNX) to reduce CPU ML latency to < 100ms; in-memory LRU inference caching.
+       - Medium Priority: $k$-cycle loop detection ($k \ge 2$), CLI offline policy dry-run tooling (`agent-airlock test-policy`), symlink canonicalization, calibration drift watchdog.
+       - Low Priority: Multi-tool compound policy schemas, streaming audit log compression & HMAC signing.
+Model: Flash

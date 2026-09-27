@@ -9,6 +9,8 @@ import asyncio
 import tempfile
 import json
 import socket
+import sys
+import os
 from pathlib import Path
 
 from agent_airlock.config import GatewayConfig, DaemonConfig
@@ -473,6 +475,37 @@ asyncio.run(server.run_forever())
         else:
             mode = self.server.token_file.stat().st_mode & 0o777
             self.assertEqual(mode, 0o600)
+
+    @unittest.skipIf(sys.platform == "win32", "Unix domain socket permissions only applicable on POSIX")
+    async def test_unix_domain_socket_permissions_posix(self):
+        """
+        Verify that on Linux/macOS, binding the Unix domain socket immediately sets
+        file permissions to 0600 (owner read/write only).
+        """
+        import os
+        tmp_dir = tempfile.TemporaryDirectory()
+        try:
+            sock_p = Path(tmp_dir.name) / "posix_test.sock"
+            tok_p = Path(tmp_dir.name) / ".posix_test.token"
+            pid_p = Path(tmp_dir.name) / "posix_test.pid"
+            cfg = GatewayConfig(
+                daemon=DaemonConfig(
+                    socket_path=str(sock_p),
+                    token_file=str(tok_p),
+                    pid_file=str(pid_p),
+                    transport="unix",
+                )
+            )
+            server = DaemonServer(config=cfg)
+            await server.start()
+            try:
+                self.assertTrue(sock_p.exists())
+                mode = os.stat(sock_p).st_mode & 0o777
+                self.assertEqual(mode, 0o600, f"Expected 0600 mode on Unix socket, got {oct(mode)}")
+            finally:
+                await server.stop()
+        finally:
+            tmp_dir.cleanup()
 
     async def test_prevent_duplicate_daemon_instance(self):
         # Attempting to start another server with the same PID file must fail

@@ -219,6 +219,11 @@ class DaemonServer:
             self._handle_client_connection,
             path=str(self.socket_path),
         )
+        if sys.platform != "win32":
+            try:
+                os.chmod(self.socket_path, 0o600)
+            except Exception as e:
+                logger.warning("Could not set 0600 permissions on Unix socket %s: %s", self.socket_path, e)
         logger.info("Listening on Unix domain socket: %s", self.socket_path)
 
     async def _start_tcp_server(self) -> None:

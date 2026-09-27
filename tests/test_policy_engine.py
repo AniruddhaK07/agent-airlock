@@ -425,6 +425,170 @@ class TestHardPolicyEngine(unittest.TestCase):
         res3 = self.engine.evaluate("run_command", {"CommandLine": 'rm -rf / "unclosed'})
         self.assertEqual(res3.verdict, PolicyVerdict.DENY, "Destructive command with unclosed quote must be hard denied!")
 
+    # =========================================================================
+    # 7. TIER-0 ANTI-TAMPER RUNTIME PROTECTION
+    # =========================================================================
+
+    def test_tier0_anti_tamper_file_writes(self):
+        protected_paths = [
+            ".agents/hooks.json",
+            "C:\\project\\.agents\\hooks.json",
+            "hooks.json",
+            ".airlock-policy.yaml",
+            ".airlock-policy.yml",
+            ".airlock-policy.json",
+            "policy.yaml",
+            "global-policy.yml",
+            "my-policy.json",
+            "~/.gemini/antigravity-cli/jev-daemon.sock",
+            "agent-airlock.sock",
+            "~/.gemini/antigravity-cli/jev-daemon.pid",
+            "agent-airlock.pid",
+            "~/.gemini/antigravity-cli/.jev-daemon.token",
+            ".agent-airlock.token",
+        ]
+        for path in protected_paths:
+            with self.subTest(tool="write_to_file", path=path):
+                res = self.engine.evaluate("write_to_file", {"TargetFile": path})
+                self.assertEqual(res.verdict, PolicyVerdict.DENY)
+                self.assertEqual(res.rule_id, "deny-airlock-runtime-tampering")
+                self.assertIn("Anti-Tamper", res.reason)
+
+            with self.subTest(tool="replace_file_content", path=path):
+                res = self.engine.evaluate("replace_file_content", {"TargetFile": path})
+                self.assertEqual(res.verdict, PolicyVerdict.DENY)
+                self.assertEqual(res.rule_id, "deny-airlock-runtime-tampering")
+
+    def test_tier0_anti_tamper_shell_redirection_and_mutations(self):
+        tamper_commands = [
+            "echo '{}' > .agents/hooks.json",
+            "echo '{}' >> .agents/hooks.json",
+            "cat update.yaml > .airlock-policy.yaml",
+            "echo 'allow: all' >> policy.yaml",
+            "Get-Process | Out-File .agents/hooks.json",
+            "cat payload.json | Set-Content .agents/hooks.json",
+            "echo x | tee .agents/hooks.json",
+            "echo 0 > ~/.gemini/antigravity-cli/jev-daemon.sock",
+            "echo 12345 > agent-airlock.pid",
+            "echo token > ~/.gemini/antigravity-cli/.jev-daemon.token",
+            "rm .agents/hooks.json",
+            "rm -rf .agents",
+            "Remove-Item .agents/hooks.json",
+            "del .airlock-policy.yaml",
+            "rm ~/.gemini/antigravity-cli/jev-daemon.sock",
+            "rm agent-airlock.pid",
+            "del ~/.gemini/antigravity-cli/.jev-daemon.token",
+            "python -c \"open('.agents/hooks.json', 'w').write('{}')\"",
+        ]
+        for cmd in tamper_commands:
+            with self.subTest(cmd=cmd):
+                res = self.engine.evaluate("run_command", {"CommandLine": cmd})
+                self.assertEqual(res.verdict, PolicyVerdict.DENY)
+                self.assertEqual(res.rule_id, "deny-airlock-runtime-tampering")
+                self.assertIn("Anti-Tamper", res.reason)
+
+    def test_tier0_anti_tamper_source_code_regression_guard(self):
+        """
+        CRITICAL REGRESSION TEST:
+        Normal development edits to agent_airlock/ source files or package Python files
+        must NOT be blocked by the Tier-0 anti-tamper rule.
+        """
+        source_paths = [
+            "agent_airlock/policy/engine.py",
+            "agent_airlock/policy/normalizer.py",
+            "agent_airlock/backends/laya.py",
+            "agent_airlock/config.py",
+            "tests/test_policy_engine.py",
+            "setup.py",
+        ]
+        for path in source_paths:
+            with self.subTest(path=path):
+                res = self.engine.evaluate("write_to_file", {"TargetFile": path})
+                # Must NOT be hard-denied by anti-tamper; ordinary source writes fall through to Jev (AMBIGUOUS)
+                self.assertNotEqual(res.rule_id, "deny-airlock-runtime-tampering")
+                self.assertEqual(res.verdict, PolicyVerdict.AMBIGUOUS)
+
+                res_edit = self.engine.evaluate("replace_file_content", {"TargetFile": path})
+                self.assertNotEqual(res_edit.rule_id, "deny-airlock-runtime-tampering")
+                self.assertEqual(res_edit.verdict, PolicyVerdict.AMBIGUOUS)
+
+    # =========================================================================
+    # 8. POWERSHELL ENCODED COMMAND & SUBSHELL EVASION HARDENING
+    # =========================================================================
+
+    def test_powershell_encoded_command_evasion(self):
+        import base64
+        # 1. UTF-16LE encoded destructive commands (PowerShell default)
+        b64_rm_rf = base64.b64encode("rm -rf /".encode("utf-16le")).decode("ascii")
+        b64_rmdir = base64.b64encode("rmdir /s /q C:\\".encode("utf-16le")).decode("ascii")
+
+        ps_encoded_attacks = [
+            f"powershell -EncodedCommand {b64_rm_rf}",
+            f"powershell -enc {b64_rm_rf}",
+            f'powershell.exe -NoProfile -ExecutionPolicy Bypass -enc "{b64_rm_rf}"',
+            f"pwsh -EncodedCommand {b64_rm_rf}",
+            f"pwsh.exe -e {b64_rm_rf}",
+            f"powershell -EncodedCommand {b64_rmdir}",
+            f'powershell.exe /enc "{b64_rmdir}"',
+        ]
+        for cmd in ps_encoded_attacks:
+            with self.subTest(cmd=cmd):
+                res = self.engine.evaluate("run_command", {"CommandLine": cmd})
+                self.assertEqual(
+                    res.verdict,
+                    PolicyVerdict.DENY,
+                    f"PowerShell encoded attack bypassed policy engine: {cmd}",
+                )
+
+        # 2. UTF-8 encoded payload
+        b64_utf8 = base64.b64encode(b"rm -rf /").decode("ascii")
+        res_utf8 = self.engine.evaluate("run_command", {"CommandLine": f"powershell -enc {b64_utf8}"})
+        self.assertEqual(res_utf8.verdict, PolicyVerdict.DENY)
+
+        # 3. Benign encoded command is disqualified from hard-allow (falls through to AMBIGUOUS)
+        b64_safe = base64.b64encode("git status".encode("utf-16le")).decode("ascii")
+        res_safe = self.engine.evaluate("run_command", {"CommandLine": f"powershell -enc {b64_safe}"})
+        self.assertNotEqual(res_safe.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_safe.verdict, PolicyVerdict.AMBIGUOUS)
+
+    def test_subshell_and_interpreter_wrapper_evasion(self):
+        subshell_attacks = [
+            # bash / sh / zsh wrappers
+            'bash -c "rm -rf /"',
+            "sh -c 'rm -rf /'",
+            '/bin/bash -c "rm -rf /"',
+            'zsh -c "rm -rf /"',
+            # cmd.exe wrappers
+            'cmd.exe /c "rd /s /q C:\\"',
+            'cmd /c "rmdir /s /q C:\\"',
+            "cmd.exe /c format C:",
+            # Invoke-Expression / iex
+            'Invoke-Expression "rm -rf /"',
+            'iex "rm -rf /"',
+            'iex \'rmdir /s /q C:\\\'',
+            # wsl wrapper
+            "wsl rm -rf /",
+            'wsl -e rm -rf /',
+            'wsl -- rm -rf /',
+            # python inline execution
+            'python -c "import os; os.system(\'rm -rf /\')"',
+            'python3 -c "import subprocess; subprocess.run([\'rm\', \'-rf\', \'/\'])"',
+            'python.exe -c "import os; os.popen(\'rmdir /s /q C:\\\\\')"',
+            # Nested wrapper evasion
+            'bash -c "powershell -EncodedCommand cgBtACAALQByAGYAIAAvAA=="',
+            'wsl bash -c "rm -rf /"',
+            # Wrapped anti-tamper attack
+            'bash -c "rm .agents/hooks.json"',
+        ]
+        for cmd in subshell_attacks:
+            with self.subTest(cmd=cmd):
+                res = self.engine.evaluate("run_command", {"CommandLine": cmd})
+                self.assertEqual(
+                    res.verdict,
+                    PolicyVerdict.DENY,
+                    f"Subshell wrapper attack bypassed policy engine: {cmd}",
+                )
+
 if __name__ == "__main__":
     unittest.main()
 

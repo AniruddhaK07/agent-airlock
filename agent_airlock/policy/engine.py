@@ -11,6 +11,9 @@ from agent_airlock.policy.normalizer import (
     strip_all_quotes,
     has_command_chaining,
     split_command_chain,
+    extract_subshell_and_encoded_payloads,
+    is_protected_runtime_path,
+    is_tampering_command,
 )
 
 class HardPolicyEngine:
@@ -34,6 +37,14 @@ class HardPolicyEngine:
         if not tool_args:
             tool_args = {}
 
+        # -------------------------------------------------------------
+        # TIER 0: Anti-Tamper Protection for Airlock Runtime Surface
+        # Evaluated first, before any other hard-deny or hard-allow check
+        # -------------------------------------------------------------
+        anti_tamper_result = self._check_tier0_anti_tamper(tool_name, tool_args)
+        if anti_tamper_result is not None:
+            return anti_tamper_result
+
         if tool_name == "run_command":
             return self._evaluate_run_command(tool_args)
         elif tool_name == "view_file":
@@ -44,6 +55,57 @@ class HardPolicyEngine:
             return self._evaluate_readonly_inspection(tool_name, tool_args)
         else:
             return self._evaluate_generic_tool(tool_name, tool_args)
+
+    def _check_tier0_anti_tamper(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[PolicyResult]:
+        """
+        Tier-0 Rule: Evaluated first, before any other hard-deny or hard-allow check.
+        Denies any write, edit, or shell-redirect targeting:
+          - .agents/hooks.json (active hook config)
+          - *policy.yaml / *policy.yml / *policy.json (workspace and global policy files)
+          - daemon runtime socket, PID file, and token files
+        Explicit scope limit: Never protects agent_airlock/ source files or *.py files.
+        """
+        # 1. File write/edit tools (write_to_file, replace_file_content)
+        if tool_name in ("write_to_file", "replace_file_content"):
+            target_file = tool_args.get("TargetFile", "").strip()
+            if target_file and is_protected_runtime_path(target_file):
+                return PolicyResult(
+                    verdict=PolicyVerdict.DENY,
+                    rule_id="deny-airlock-runtime-tampering",
+                    reason=f"Hard Deny (Anti-Tamper): Mutating airlock runtime surface ({target_file}) is prohibited.",
+                )
+
+        # 2. Shell execution (run_command)
+        elif tool_name == "run_command":
+            raw_cmd = tool_args.get("CommandLine", "").strip()
+            if raw_cmd:
+                if is_tampering_command(raw_cmd):
+                    return PolicyResult(
+                        verdict=PolicyVerdict.DENY,
+                        rule_id="deny-airlock-runtime-tampering",
+                        reason="Hard Deny (Anti-Tamper): Shell command targets airlock runtime configuration, policy, socket, or token files.",
+                    )
+                unwrapped = extract_subshell_and_encoded_payloads(raw_cmd)
+                for p in unwrapped:
+                    if is_tampering_command(p):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.DENY,
+                            rule_id="deny-airlock-runtime-tampering",
+                            reason="Hard Deny (Anti-Tamper): Subshell/encoded command targets airlock runtime configuration, policy, socket, or token files.",
+                        )
+
+        # 3. Generic tools attempting to write to protected paths
+        else:
+            for k, val in tool_args.items():
+                if isinstance(val, str) and is_protected_runtime_path(val):
+                    if any(w in tool_name.lower() for w in ("write", "edit", "modify", "delete", "remove", "save")):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.DENY,
+                            rule_id="deny-airlock-runtime-tampering",
+                            reason=f"Hard Deny (Anti-Tamper): Tool '{tool_name}' targeting protected runtime surface is prohibited.",
+                        )
+
+        return None
 
     def _evaluate_run_command(self, tool_args: Dict[str, Any]) -> PolicyResult:
         raw_cmd = tool_args.get("CommandLine", "").strip()
@@ -75,6 +137,29 @@ class HardPolicyEngine:
             sc_tokens, _ = tokenize_command(sc)
             if sc_tokens:
                 candidates_to_check.add(" ".join(sc_tokens))
+
+        # Extract unwrapped subshell and encoded command payloads
+        unwrapped_payloads = extract_subshell_and_encoded_payloads(raw_cmd)
+        for sc in sub_cmds:
+            unwrapped_payloads.extend(extract_subshell_and_encoded_payloads(sc))
+
+        if unwrapped_payloads:
+            # Subshell wrappers and encoded commands are disqualified from hard-allow
+            is_chained = True
+
+        for p in unwrapped_payloads:
+            candidates_to_check.add(p)
+            candidates_to_check.add(normalize_command(p))
+            candidates_to_check.add(strip_all_quotes(normalize_command(p)))
+            p_tokens, _ = tokenize_command(p)
+            if p_tokens:
+                candidates_to_check.add(" ".join(p_tokens))
+            for p_sub in split_command_chain(p):
+                candidates_to_check.add(p_sub)
+                candidates_to_check.add(normalize_command(p_sub))
+                p_sub_tokens, _ = tokenize_command(p_sub)
+                if p_sub_tokens:
+                    candidates_to_check.add(" ".join(p_sub_tokens))
 
         # -------------------------------------------------------------
         # STEP 1: Hard Deny Evaluation (Zero False Negatives)
