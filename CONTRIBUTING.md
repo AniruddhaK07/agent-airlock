@@ -1,23 +1,23 @@
-# Contributing to Jev Airlock
+# Contributing to Agent Airlock
 
-Thank you for contributing to Jev Airlock! We welcome contributions to deterministic safety policies, ML fine-tuning datasets, circuit breaker heuristics, and platform integrations.
+Thank you for contributing to Agent Airlock! We welcome contributions to deterministic safety policies, ML fine-tuning datasets, circuit breaker heuristics, and platform integrations.
 
-Because Jev Airlock sits directly on the execution boundary of autonomous AI coding assistants, **all security-critical logic—especially deterministic policy rules—must adhere to strict verification standards**.
+Because Agent Airlock sits directly on the execution boundary of autonomous AI coding assistants, **all security-critical logic—especially deterministic policy rules—must adhere to strict verification standards**.
 
 ---
 
 ## 1. Development Environment Setup
 
-Jev Airlock requires **Python 3.11+**.
+Agent Airlock requires **Python 3.11+**.
 
 ```bash
 # Clone repository
-git clone https://github.com/AniruddhaK07/jev-airlock.git
-cd jev-airlock
+git clone https://github.com/AniruddhaK07/agent-airlock.git
+cd agent-airlock
 
 # Create virtual or conda environment
-conda create -n jev_env python=3.11 -y
-conda activate jev_env
+conda create -n airlock_env python=3.11 -y
+conda activate airlock_env
 
 # Install package in editable development mode
 pip install -e .
@@ -55,10 +55,10 @@ pytest tests/test_scenarios.py -v       # Multi-turn E2E operational scenarios
 
 ## 3. Policy Change Protocol (Security-Critical Rule Review)
 
-Changes to the deterministic rule set in [`jev_gateway/policy/default_rules.py`](file:///C:/Users/ASUS/Desktop/A/projects/sva-harness/jev_gateway/policy/default_rules.py) and input normalizer in [`jev_gateway/policy/normalizer.py`](file:///C:/Users/ASUS/Desktop/A/projects/sva-harness/jev_gateway/policy/normalizer.py) are **security-critical**.
+Changes to the deterministic rule set in [`agent_airlock/policy/default_rules.py`](file:///C:/Users/ASUS/Desktop/A/projects/sva-harness/agent_airlock/policy/default_rules.py) and input normalizer in [`agent_airlock/policy/normalizer.py`](file:///C:/Users/ASUS/Desktop/A/projects/sva-harness/agent_airlock/policy/normalizer.py) are **security-critical**.
 
 > [!CAUTION]
-> A false negative (allowing a dangerous command to execute without human review) is the highest-severity failure mode in Jev Airlock. PRs proposing changes to built-in rules face heightened scrutiny compared to general code changes.
+> A false negative (allowing a dangerous command to execute without human review) is the highest-severity failure mode in Agent Airlock. PRs proposing changes to built-in rules face heightened scrutiny compared to general code changes.
 
 ### Requirements for Modifying Default Rules:
 1. **Zero False-Negative Guarantee**: Any new rule or pattern modification must not relax existing hard-deny invariants.
@@ -76,7 +76,7 @@ Changes to the deterministic rule set in [`jev_gateway/policy/default_rules.py`]
 
 ## 4. Expanding the Laya Training Dataset
 
-Jev Airlock uses a fine-tuned ModernBERT model (via `laya`) to evaluate ambiguous commands that cannot be resolved deterministically.
+Agent Airlock uses a fine-tuned ModernBERT model (via `laya`) to evaluate ambiguous commands that cannot be resolved deterministically.
 
 ### Dataset Structure
 The dataset lives in `data/training_examples.jsonl`. Each record represents a realistic command invocation evaluated across three heads:

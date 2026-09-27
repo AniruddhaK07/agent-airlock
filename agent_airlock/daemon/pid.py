@@ -96,7 +96,7 @@ def is_process_running(pid: int, expected_signature: Optional[str] = None) -> bo
     """
     Cross-platform check whether a process with given PID is currently active.
     If expected_signature is specified, verifies that the process's command line
-    matches the daemon invocation (e.g. 'jev_gateway.daemon.server' or 'jev-daemon'),
+    matches the daemon invocation (e.g. 'agent_airlock.daemon.server' or 'jev-daemon'),
     preventing recycled-PID false positives when another Python process reuses the PID.
     """
     if pid <= 0:
@@ -168,9 +168,9 @@ def is_process_running(pid: int, expected_signature: Optional[str] = None) -> bo
         cmd_lower = cmdline.lower()
         return (
             sig_lower in cmd_lower
-            or "jev_gateway.daemon.server" in cmd_lower
+            or "agent_airlock.daemon.server" in cmd_lower
             or "jev-daemon" in cmd_lower
-            or "jev_gateway" in cmd_lower
+            or "agent_airlock" in cmd_lower
         )
 
     return True
@@ -218,7 +218,7 @@ class PIDManager:
         if pid is None:
             return False
 
-        if is_process_running(pid, expected_signature="jev_gateway.daemon.server"):
+        if is_process_running(pid, expected_signature="agent_airlock.daemon.server"):
             return True
 
         # Process is dead or unrelated; clean up stale files

@@ -14,25 +14,25 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jev_gateway.config import (
+from agent_airlock.config import (
     GatewayConfig,
     DaemonConfig,
     CircuitBreakerConfig,
     JevConfig,
 )
-from jev_gateway.circuit_breaker.hasher import (
+from agent_airlock.circuit_breaker.hasher import (
     normalize_error,
     normalize_command,
     hash_string,
     create_error_signature,
     compute_similarity,
 )
-from jev_gateway.circuit_breaker.breaker import (
+from agent_airlock.circuit_breaker.breaker import (
     CircuitBreaker,
     CircuitBreakerResult,
 )
-from jev_gateway.daemon.server import DaemonServer
-from jev_gateway.hooks.stub_client import StubHookClient
+from agent_airlock.daemon.server import DaemonServer
+from agent_airlock.hooks.stub_client import StubHookClient
 
 try:
     import laya

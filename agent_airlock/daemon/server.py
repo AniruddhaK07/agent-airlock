@@ -14,14 +14,29 @@ import time
 import sys
 import os
 
-from jev_gateway.config import GatewayConfig, load_config
-from jev_gateway.policy.engine import HardPolicyEngine
-from jev_gateway.daemon.router import IPCRouter
-from jev_gateway.daemon.pid import PIDManager
-from jev_gateway.jev.client import JevClient
-from jev_gateway.jev.evaluator import JevEvaluator
+from agent_airlock.config import GatewayConfig, load_config
+from agent_airlock.policy.engine import HardPolicyEngine
+from agent_airlock.daemon.router import IPCRouter
+from agent_airlock.daemon.pid import PIDManager
+from agent_airlock.jev.client import JevClient
+from agent_airlock.jev.evaluator import JevEvaluator
 
 logger = logging.getLogger(__name__)
+
+
+def _can_load_local_laya(provider: str, checkpoint_path: str) -> bool:
+    """Checks whether local Laya model (disk checkpoint or HF Hub model ID) should be attempted."""
+    if provider in ("local", "laya"):
+        return True
+    if provider == "auto":
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            return True
+        if checkpoint_path and not checkpoint_path.startswith((".", "/", "\\")) and "\\" not in checkpoint_path:
+            parts = checkpoint_path.split("/")
+            if len(parts) in (1, 2) and not os.path.isabs(checkpoint_path):
+                return True
+    return False
+
 
 class DaemonServer:
     """
@@ -57,19 +72,17 @@ class DaemonServer:
             self.router = router
         else:
             provider = getattr(self.config.jev, "provider", "auto").lower()
-            checkpoint_path = getattr(self.config.jev, "checkpoint_path", "checkpoints/laya-finetuned")
+            checkpoint_path = getattr(self.config.jev, "checkpoint_path", "ruddh/agent-airlock-laya")
 
             # Check if local fine-tuned Laya model or remote Jev can/should be loaded in background
-            should_try_local = provider in ("local", "laya") or (
-                provider == "auto" and os.path.exists(checkpoint_path)
-            )
+            should_try_local = _can_load_local_laya(provider, checkpoint_path)
             api_key = os.getenv(self.config.jev.api_key_env, "")
             should_try_remote = bool(api_key or provider == "remote")
             self._should_load_model = should_try_local or should_try_remote
 
             audit_logger = None
             try:
-                from jev_gateway.audit.logger import AuditLogger
+                from agent_airlock.audit.logger import AuditLogger
                 audit_logger = AuditLogger(
                     log_path=self.config.audit.log_file,
                     flush_immediate=self.config.audit.flush_immediate,
@@ -142,17 +155,15 @@ class DaemonServer:
         Hard policy engine answers requests immediately while this runs.
         """
         provider = getattr(self.config.jev, "provider", "auto").lower()
-        checkpoint_path = getattr(self.config.jev, "checkpoint_path", "checkpoints/laya-finetuned")
+        checkpoint_path = getattr(self.config.jev, "checkpoint_path", "ruddh/agent-airlock-laya")
 
-        should_try_local = provider in ("local", "laya") or (
-            provider == "auto" and os.path.exists(checkpoint_path)
-        )
+        should_try_local = _can_load_local_laya(provider, checkpoint_path)
 
         if should_try_local:
             try:
                 device = getattr(self.config.jev, "device", None)
                 def _load_local():
-                    from jev_gateway.jev.local_laya import LocalLayaClient
+                    from agent_airlock.jev.local_laya import LocalLayaClient
                     return LocalLayaClient(checkpoint_path=checkpoint_path, device=device)
 
                 client = await asyncio.to_thread(_load_local)

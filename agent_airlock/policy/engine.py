@@ -3,9 +3,9 @@ Hard Policy Engine: Deterministic rule engine for Antigravity CLI tool gating.
 """
 
 from typing import List, Dict, Any, Optional
-from jev_gateway.policy.models import PolicyVerdict, PolicyRule, PolicyResult
-from jev_gateway.policy.default_rules import get_default_rules
-from jev_gateway.policy.normalizer import (
+from agent_airlock.policy.models import PolicyVerdict, PolicyRule, PolicyResult
+from agent_airlock.policy.default_rules import get_default_rules
+from agent_airlock.policy.normalizer import (
     tokenize_command,
     normalize_command,
     strip_all_quotes,

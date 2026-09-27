@@ -14,8 +14,8 @@ import sys
 import subprocess
 import logging
 
-from jev_gateway.config import GatewayConfig, load_config
-from jev_gateway.daemon.lock import FileLock
+from agent_airlock.config import GatewayConfig, load_config
+from agent_airlock.daemon.lock import FileLock
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class StubHookClient:
         self.lock_file = Path(lock_file or (str(pid_p) + ".lock")).expanduser().resolve()
         self.timeout = timeout or cfg.daemon.request_timeout_seconds
         self.enable_autospawn = enable_autospawn
-        self.spawn_command = spawn_command or [sys.executable, "-m", "jev_gateway.daemon.server"]
+        self.spawn_command = spawn_command or [sys.executable, "-m", "agent_airlock.daemon.server"]
         self.spawn_timeout = (
             spawn_timeout
             if spawn_timeout is not None

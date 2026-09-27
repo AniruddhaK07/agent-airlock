@@ -8,29 +8,29 @@ import pytest
 import time
 from typing import Dict, Any, Optional
 
-from jev_gateway.config import GatewayConfig, JevThresholdsConfig
-from jev_gateway.jev.models import (
+from agent_airlock.config import GatewayConfig, JevThresholdsConfig
+from agent_airlock.jev.models import (
     GateDecision,
     ChoiceRoute,
     JevEvaluation,
     JevDecisionResult,
 )
-from jev_gateway.jev.client import (
+from agent_airlock.jev.client import (
     JevClient,
     JevClientError,
     JevTimeoutError,
     JevParseError,
     PINNED_MODEL,
 )
-from jev_gateway.jev.prompts import (
+from agent_airlock.jev.prompts import (
     SCORE_RUBRIC,
     NOUL_RUBRIC,
     CHOICE_RUBRIC,
     format_jev_evaluation_prompt,
 )
-from jev_gateway.jev.evaluator import JevEvaluator
-from jev_gateway.daemon.router import IPCRouter
-from jev_gateway.policy.engine import HardPolicyEngine
+from agent_airlock.jev.evaluator import JevEvaluator
+from agent_airlock.daemon.router import IPCRouter
+from agent_airlock.policy.engine import HardPolicyEngine
 
 
 class TestJevIntegration:

@@ -17,14 +17,14 @@
     - Exported verified fine-tuned model package to `checkpoints/laya-finetuned/`.
     - Completed Phase 3b close-out verification: audited 15-command benchmark overlap with `train.json` (60.0% exact, 33.3% near, 6.7% novel; documented caveat in `decisions.md`); verified `kill -9 1234` root cause (label divergence in `train.json`) and confirmed **0 / 40 errors** with confidence $\ge 0.90$ and **0 / 40 false-allows** $\ge 0.90$ on the held-out validation set.
   - Phase 3c (Daemon & Local Model Integration & Grounding):
-    - Implemented `LocalLayaClient` in `jev_gateway/jev/local_laya.py` loading `checkpoints/laya-finetuned` directly via `laya.load()` (never `Router()`).
+    - Implemented `LocalLayaClient` in `agent_airlock/jev/local_laya.py` loading `checkpoints/laya-finetuned` directly via `laya.load()` (never `Router()`).
     - Implemented singleton model memory residency to eliminate repeated weight reloads and prevent CUDA VRAM fragmentation.
     - Audited 200-command training corpus consistency across 21 families; documented semantic label boundaries in `decisions.md`.
     - Measured empirical GPU latency with explicit `torch.cuda.synchronize()`: p50 = 38.14 ms, p95 = 47.16 ms, mean = 39.78 ms; refuted "sub-millisecond" claim and grounded `spec.md`.
     - Hardened Phase 1 hard-deny list against all generalized fork-bomb patterns (`deny-fork-bomb`).
   - Phase 4 (Circuit Breaker):
-    - Implemented `jev_gateway/circuit_breaker/hasher.py`: normalizes ephemeral tokens (timestamps, PIDs, memory pointers, line/col numbers) and computes reproducible SHA-256 digests and string similarity.
-    - Implemented `jev_gateway/circuit_breaker/breaker.py`: two-tier loop detection:
+    - Implemented `agent_airlock/circuit_breaker/hasher.py`: normalizes ephemeral tokens (timestamps, PIDs, memory pointers, line/col numbers) and computes reproducible SHA-256 digests and string similarity.
+    - Implemented `agent_airlock/circuit_breaker/breaker.py`: two-tier loop detection:
       - Tier 1: In-code hash pre-filter catches exact repeating failures in rolling window (0 ms).
       - Tier 2: When surface text differs but similarity $\ge 0.80$, escalates to local Laya Noul question for semantic confirmation (~38 ms). Requires affirmative repeat probability (`min_repeat_prob=0.60`) AND high confidence (`0.80`).
       - Halts runaway fix loops and returns `force_ask` with detailed failure history summary.
@@ -32,9 +32,9 @@
     - Maintained dispatch order: hard policy engine first and authoritative, circuit breaker before probabilistic gating, never ahead of hard-deny.
     - Authored comprehensive test suite `tests/test_circuit_breaker.py` (12 tests).
   - Phase 5 (Audit Log & Follow-ups):
-    - Implemented `AuditEvent` dataclass (`jev_gateway/audit/models.py`) with ISO 8601 timestamps and comprehensive schema fields.
-    - Implemented `AuditLogger` (`jev_gateway/audit/logger.py`) with thread-safe append-only writes, immediate buffer flush, non-disruptive error handling, and atomic log rotation via temporary file replacement. Measured hot-path latency at 0.29 ms p50 / 0.46 ms p95.
-    - Implemented `AuditReader` (`jev_gateway/audit/reader.py`) with file integrity verification (syntax check, ISO timestamp validation, corrupted line identification), flexible querying, and metric statistics aggregation.
+    - Implemented `AuditEvent` dataclass (`agent_airlock/audit/models.py`) with ISO 8601 timestamps and comprehensive schema fields.
+    - Implemented `AuditLogger` (`agent_airlock/audit/logger.py`) with thread-safe append-only writes, immediate buffer flush, non-disruptive error handling, and atomic log rotation via temporary file replacement. Measured hot-path latency at 0.29 ms p50 / 0.46 ms p95.
+    - Implemented `AuditReader` (`agent_airlock/audit/reader.py`) with file integrity verification (syntax check, ISO timestamp validation, corrupted line identification), flexible querying, and metric statistics aggregation.
     - Wired `AuditLogger` directly into `IPCRouter` and `DaemonServer`.
     - Restored `shlex` as primary tokenization in `normalizer.py` with defensive try/except parse handling and fail-closed routing for unparseable syntax, backed by unified regex matching layer.
     - Authored comprehensive test suite `tests/test_audit_log.py` (19 tests) and updated daemon/policy test suites. Total project test suite now stands at 105 passed tests (100% pass rate).
@@ -88,11 +88,11 @@
 ## Phase 2 — Daemon & IPC
 - **Status**: Done
 - **Completed**:
-  - Implemented `PIDManager` in `jev_gateway/daemon/pid.py` with cross-platform process liveness checking, duplicate instance detection, and clean teardown of PID, socket, and token files.
-  - Implemented `IPCRouter` in `jev_gateway/daemon/router.py` supporting `ndjson` framing, bearer token validation, in-memory state isolation partitioned by `workspace_root`, strict fail-closed on unresolved workspace context, PreToolUse policy dispatch, PostToolUse event handling, and Ping diagnostics.
-  - Implemented `DaemonServer` in `jev_gateway/daemon/server.py` using `asyncio`, supporting `AF_UNIX` domain sockets with automatic loopback TCP fallback, dynamic port binding, bearer token generation, Windows NTFS ACL security via `icacls`, CLI entrypoint `main()`, and graceful shutdown handlers.
-  - Implemented `FileLock` in `jev_gateway/daemon/lock.py` for cross-platform inter-process synchronization (`msvcrt` on Windows, `fcntl` on POSIX).
-  - Implemented `StubHookClient` in `jev_gateway/hooks/stub_client.py` with race-safe daemon auto-spawn on `ENOENT`/`ECONNREFUSED`, strict 200ms deadline falling back to `force_ask`, and general fail-closed guarantee (`"ask"`).
+  - Implemented `PIDManager` in `agent_airlock/daemon/pid.py` with cross-platform process liveness checking, duplicate instance detection, and clean teardown of PID, socket, and token files.
+  - Implemented `IPCRouter` in `agent_airlock/daemon/router.py` supporting `ndjson` framing, bearer token validation, in-memory state isolation partitioned by `workspace_root`, strict fail-closed on unresolved workspace context, PreToolUse policy dispatch, PostToolUse event handling, and Ping diagnostics.
+  - Implemented `DaemonServer` in `agent_airlock/daemon/server.py` using `asyncio`, supporting `AF_UNIX` domain sockets with automatic loopback TCP fallback, dynamic port binding, bearer token generation, Windows NTFS ACL security via `icacls`, CLI entrypoint `main()`, and graceful shutdown handlers.
+  - Implemented `FileLock` in `agent_airlock/daemon/lock.py` for cross-platform inter-process synchronization (`msvcrt` on Windows, `fcntl` on POSIX).
+  - Implemented `StubHookClient` in `agent_airlock/hooks/stub_client.py` with race-safe daemon auto-spawn on `ENOENT`/`ECONNREFUSED`, strict 200ms deadline falling back to `force_ask`, and general fail-closed guarantee (`"ask"`).
   - Authored comprehensive integration test suite `tests/test_daemon_ipc.py` (20 tests) covering round-trip requests, policy engine dispatch, bearer token security, concurrent requests, malformed payloads, workspace state isolation, unresolved workspace fail-closed, race-safe cold-start multi-spawn prevention, Windows ACLs, auto-spawn timeout/failure to `force_ask`, offline fail-closed fallback, and lifecycle teardown.
 - **What's left**: None (Phase 2 hardening and exit criteria met; 38 tests, 130 subtests passing).
 - **Blockers**: None.
@@ -100,14 +100,14 @@
 ## Phase 3 — Jev integration layer
 - **Status**: Done
 - **Completed**:
-  - Implemented `jev_gateway/jev/models.py` with typed dataclasses (`GateDecision`, `ChoiceRoute`, `JevEvaluation`, `JevDecisionResult`).
-  - Implemented `jev_gateway/jev/prompts.py` defining calibrated rubrics for Score (blast radius 1.0–5.0), Noul (reversibility probability 0.0–1.0), Choice (routing: deterministic-safe, needs-human, needs-reasoning-model), and unified prompt formatter.
-  - Implemented `jev_gateway/jev/client.py` with strict model identity pinning (`jev-1.13.0`), silent upgrade prevention, retries on transient network errors, timeout handling, and support for both nested and flat API response schemas.
-  - Implemented `jev_gateway/jev/evaluator.py` enforcing strict safety and confidence thresholds (`allow_confidence`, `deny_confidence`, `max_safe_blast_radius`, `min_safe_reversible_prob`), high blast-radius auto-denials, and fail-closed handling to `ask` on any error or timeout.
-  - Updated `jev_gateway/daemon/router.py` and `server.py` to seamlessly route ambiguous tool executions from `HardPolicyEngine` into the Jev evaluation layer, preserving workspace isolation and failing closed on API errors.
+  - Implemented `agent_airlock/jev/models.py` with typed dataclasses (`GateDecision`, `ChoiceRoute`, `JevEvaluation`, `JevDecisionResult`).
+  - Implemented `agent_airlock/jev/prompts.py` defining calibrated rubrics for Score (blast radius 1.0–5.0), Noul (reversibility probability 0.0–1.0), Choice (routing: deterministic-safe, needs-human, needs-reasoning-model), and unified prompt formatter.
+  - Implemented `agent_airlock/jev/client.py` with strict model identity pinning (`jev-1.13.0`), silent upgrade prevention, retries on transient network errors, timeout handling, and support for both nested and flat API response schemas.
+  - Implemented `agent_airlock/jev/evaluator.py` enforcing strict safety and confidence thresholds (`allow_confidence`, `deny_confidence`, `max_safe_blast_radius`, `min_safe_reversible_prob`), high blast-radius auto-denials, and fail-closed handling to `ask` on any error or timeout.
+  - Updated `agent_airlock/daemon/router.py` and `server.py` to seamlessly route ambiguous tool executions from `HardPolicyEngine` into the Jev evaluation layer, preserving workspace isolation and failing closed on API errors.
   - Implemented wall-clock total deadline budget (400ms) across all retries in `JevClient`, avoiding latency stacking.
   - Authored comprehensive test suite `tests/test_jev_integration.py` (26 tests) verifying model pinning, prompt formatting, schema parsing, out-of-bounds rejection, retries/timeouts, 400ms wall-clock total latency budget, threshold decisions, HTTP error simulation, and router integration. 100% pass rate (64 tests, 130 subtests across project).
-  - Initialized git tracking with remote `origin` (`https://github.com/AniruddhaK07/jev-airlock`), pushed to `main`, and tagged `phase3-complete`.
+  - Initialized git tracking with remote `origin` (`https://github.com/AniruddhaK07/agent-airlock`), pushed to `main`, and tagged `phase3-complete`.
 - **What's left**: None (Phase 3 exit criteria met).
 - **Blockers**: None.
 
@@ -125,9 +125,9 @@
 ## Phase 5 — Audit log
 - **Status**: Done
 - **Completed**:
-  - Implemented `AuditEvent` schema in `jev_gateway/audit/models.py`.
-  - Implemented `AuditLogger` append-only thread-safe writer with atomic log rotation in `jev_gateway/audit/logger.py`. Measured synchronous hot-path latency at 0.29 ms p50 / 0.46 ms p95 with `flush_immediate=True`.
-  - Implemented `AuditReader` query engine, integrity verifier, and statistics aggregator in `jev_gateway/audit/reader.py`.
+  - Implemented `AuditEvent` schema in `agent_airlock/audit/models.py`.
+  - Implemented `AuditLogger` append-only thread-safe writer with atomic log rotation in `agent_airlock/audit/logger.py`. Measured synchronous hot-path latency at 0.29 ms p50 / 0.46 ms p95 with `flush_immediate=True`.
+  - Implemented `AuditReader` query engine, integrity verifier, and statistics aggregator in `agent_airlock/audit/reader.py`.
   - Integrated `AuditLogger` with `IPCRouter` and `DaemonServer`.
   - Restored `shlex` as primary tokenization with fail-closed unparseable syntax handling in `normalizer.py` and `engine.py`.
   - Authored 19 tests in `tests/test_audit_log.py` and added unparseable syntax tests. Total 105 tests passing.
@@ -137,7 +137,7 @@
 ## Phase 6 — Antigravity hook integration
 - **Status**: Done
 - **Completed**:
-  - Authored production `jev_gateway/hooks/pre_tool_use.py` (41 lines) and `post_tool_use.py` (39 lines), strictly under the 50-line limit.
+  - Authored production `agent_airlock/hooks/pre_tool_use.py` (41 lines) and `post_tool_use.py` (39 lines), strictly under the 50-line limit.
   - Implemented automatic repository root self-resolution into `sys.path` to decouple hook execution from working directories.
   - Authored `pyproject.toml` and installed `jev-gateway` in editable mode (`pip install -e .`) in `torch_env`.
   - Implemented `installer.py` supporting dynamic config generation with absolute script paths and safe `.agents/hooks.json` merging.
@@ -165,7 +165,7 @@
   - Closed Phase 7 verification item: confirmed Scenario 3 used fixture values for deterministic CI; authored `test_scenario_ambiguous_operations_live_laya` exercising the live fine-tuned Laya checkpoint.
   - Hardened daemon process verification: added cross-platform POSIX PID verification in `pid.py` (Linux `/proc/{pid}/cmdline`, macOS `ps`), tightened recycled-PID signature matching, and upgraded latency logging to `time.perf_counter()` for sub-millisecond precision.
   - Characterized CPU-only performance: empirically benchmarked CPU loading (10.52s) and inference latency (~1,250ms mean) across 10 iterations; verified zero hard CUDA dependencies in codebase; added explicit `device: Optional[str]` support and independent device agent caching.
-  - Formulated checkpoint distribution strategy: dual-track distribution with pre-trained weights hosted on Hugging Face Hub (`AniruddhaK/jev-airlock-laya`), full training pipeline and starter dataset bundled in repo, and pure deterministic fallback when offline/weights absent.
+  - Formulated checkpoint distribution strategy: dual-track distribution with pre-trained weights hosted on Hugging Face Hub (`ruddh/agent-airlock-laya`), full training pipeline and starter dataset bundled in repo, and pure deterministic fallback when offline/weights absent.
   - Authored release documentation deliverables:
     - `README.md`: comprehensive overview, 4-tier decision cascade diagram, hardware specifications and measured latencies, installation guide, checkpoint distribution model, and safety disclaimer.
     - `examples/workspace-policy.yaml`: sample project policy demonstrating workspace rules and allow/deny hierarchy.

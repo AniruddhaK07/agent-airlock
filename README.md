@@ -1,4 +1,4 @@
-# Jev Airlock 🛡️
+# Agent Airlock 🛡️
 
 **Layered Safety Airlock & Deterministic Policy Gateway for Autonomous AI Coding Assistants**
 
@@ -9,13 +9,13 @@
 
 Autonomous AI coding assistants (such as Google Antigravity) are powerful because they can inspect code, run terminal commands, and edit files independently. However, giving an autonomous agent direct shell access introduces serious operational risks: accidental root wipes, runaway failure fix-loops, credential exfiltration, and destructive git commands.
 
-**Jev Airlock** is a local, high-performance security airlock that intercepts tool execution calls before they reach your system. It combines deterministic pattern matching with a calibrated, fine-tuned transformer classifier to provide **zero-friction speed for safe commands** and **uncompromising protection against dangerous or ambiguous operations**.
+**Agent Airlock** is a local, high-performance security airlock that intercepts tool execution calls before they reach your system. It combines deterministic pattern matching with a calibrated, fine-tuned transformer classifier to provide **zero-friction speed for safe commands** and **uncompromising protection against dangerous or ambiguous operations**.
 
 ---
 
 ## 🏗️ Layered Architecture
 
-Jev Airlock intercepts agent tool calls via the standard `PreToolUse` and `PostToolUse` lifecycle hooks using a 4-tier decision cascade:
+Agent Airlock intercepts agent tool calls via the standard `PreToolUse` and `PostToolUse` lifecycle hooks using a 4-tier decision cascade:
 
 ```
 [Agent Tool Call: run_command / view_file / write_to_file]
@@ -78,8 +78,11 @@ All benchmarks below were empirically measured on identical fine-tuned weights:
 | **Daemon RAM Footprint** | ~650 MB (CUDA resident) | ~450 MB (Host RAM) |
 | **Recommended Timeout** | `request_timeout_seconds: 5.0` | `request_timeout_seconds: 5.0+` |
 
-> [!NOTE]
-> Jev Airlock does **not** hardcode CUDA dependencies. If no GPU is available, it gracefully defaults to CPU inference. Because CPU inference averages ~1.25s, keep the default `request_timeout_seconds: 5.0` to avoid premature fail-closed timeouts.
+> [!WARNING]
+> **CPU Fallback Latency & User Experience**: Agent Airlock does **not** hardcode CUDA dependencies and runs gracefully on CPU-only hardware. However, please be aware of the real-world operational profile:
+> - **Hard-Allow and Hard-Deny commands are completely unaffected (< 1 ms)** regardless of hardware. Safe routine commands (`git status`, file reads, directory inspection) resolve instantly with zero delay.
+> - **Ambiguous operations requiring ML airlock evaluation will pause for roughly 1.0 – 1.5 seconds** (empirically measured: **1,250 ms mean**, up to **1,462 ms peak**) while the ModernBERT transformer runs on CPU. This introduces a noticeable operational delay during interactive agent sessions before the decision resolves.
+> - Keep the default timeout (`request_timeout_seconds: 5.0` or higher) in your configuration so CPU inference does not trigger premature fail-closed timeouts.
 
 ---
 
@@ -91,8 +94,8 @@ The local ML safety airlock is powered by a fine-tuned **ModernBERT** architectu
 3. **Route** (3-way choice): `deterministic-safe`, `needs-human`, or `needs-reasoning-model`.
 
 ### Out-of-the-Box Distribution
-- **Pre-Trained Weights**: Pre-trained weights are hosted on Hugging Face Hub under [`AniruddhaK/jev-airlock-laya`](https://huggingface.co/AniruddhaK/jev-airlock-laya) and will download automatically if no local checkpoint is found.
-- **Deterministic Pure Mode**: If no model weights are downloaded and no network is available, Jev Airlock operates in **Pure Deterministic Mode** (Stage 1), safely evaluating hard rules and failing closed to `ask` for any ambiguous commands.
+- **Pre-Trained Weights**: Pre-trained weights are hosted on Hugging Face Hub under [`ruddh/agent-airlock-laya`](https://huggingface.co/ruddh/agent-airlock-laya) and will download automatically if no local checkpoint is found.
+- **Deterministic Pure Mode**: If no model weights are downloaded and no network is available, Agent Airlock operates in **Pure Deterministic Mode** (Stage 1), safely evaluating hard rules and failing closed to `ask` for any ambiguous commands.
 - **Full Training Pipeline Shipped**: The complete fine-tuning pipeline and starter dataset live in this repository:
   - Dataset: `data/training_examples.jsonl` (200 diverse developer operations across 21 tool families).
   - Training script: `scripts/train_laya.py`.
@@ -111,8 +114,8 @@ The local ML safety airlock is powered by a fine-tuned **ModernBERT** architectu
 ### 2. Install Package
 ```bash
 # Clone repository
-git clone https://github.com/AniruddhaK07/jev-airlock.git
-cd jev-airlock
+git clone https://github.com/AniruddhaK07/agent-airlock.git
+cd agent-airlock
 
 # Install in editable mode
 pip install -e .
@@ -144,26 +147,26 @@ The background daemon automatically starts on the first hook invocation. You can
 
 ```bash
 # Start daemon in foreground for debugging
-jev-daemon --foreground
+agent-airlock-daemon --foreground
 
 # Check daemon status
-jev-daemon --status
+agent-airlock-daemon --status
 
 # Stop daemon cleanly
-jev-daemon --stop
+agent-airlock-daemon --stop
 ```
 
 ---
 
 ## ⚙️ Configuration Hierarchy
 
-Jev Airlock uses a 3-tier hierarchical configuration:
+Agent Airlock uses a 3-tier hierarchical configuration:
 
-1. **Bundled Defaults** (`jev_gateway/policy/default_rules.py`): Immutable baseline safety rules. Destructive shell commands (`rm -rf /`, fork bombs, reverse shells, raw disk writes) are hard-denied.
+1. **Bundled Defaults** (`agent_airlock/policy/default_rules.py`): Immutable baseline safety rules. Destructive shell commands (`rm -rf /`, fork bombs, reverse shells, raw disk writes) are hard-denied.
 2. **Global Config** (`~/.gemini/antigravity-cli/config.yaml`): Daemon timeouts, socket paths, audit retention, and ML thresholds. (See [`examples/global-config.yaml`](examples/global-config.yaml)).
-3. **Workspace Policy** (`.jev-policy.yaml` in project root): Workspace-specific allow and deny rules. (See [`examples/workspace-policy.yaml`](examples/workspace-policy.yaml)).
+3. **Workspace Policy** (`.airlock-policy.yaml` in project root): Workspace-specific allow and deny rules. (See [`examples/workspace-policy.yaml`](examples/workspace-policy.yaml)).
 
-### Sample `.jev-policy.yaml`
+### Sample `.airlock-policy.yaml`
 ```yaml
 version: "1.0"
 allow_override_denies: false
@@ -192,10 +195,10 @@ Every event is recorded with microsecond timestamps in `~/.gemini/antigravity-cl
 
 ```bash
 # Query recent tool decisions
-python -m jev_gateway.audit.reader --recent 10
+python -m agent_airlock.audit.reader --recent 10
 
 # View summary statistics
-python -m jev_gateway.audit.reader --stats
+python -m agent_airlock.audit.reader --stats
 ```
 
 Example audit record:

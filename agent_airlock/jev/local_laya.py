@@ -9,11 +9,12 @@ import os
 import time
 import logging
 
-from jev_gateway.jev.models import JevEvaluation, ChoiceRoute
-from jev_gateway.jev.client import JevClientError
+from agent_airlock.jev.models import JevEvaluation, ChoiceRoute
+from agent_airlock.jev.client import JevClientError
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HF_MODEL_ID = "ruddh/agent-airlock-laya"
 DEFAULT_CHECKPOINT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "checkpoints", "laya-finetuned")
 )
@@ -48,12 +49,33 @@ QUESTIONS = {
 _CACHED_AGENTS: Dict[Any, Any] = {}
 
 
-def get_laya_agent(checkpoint_path: str, device: Optional[str] = None):
+def _is_hf_repo_id(path: str) -> bool:
+    """Returns True if path looks like a Hugging Face repo ID ('model' or 'owner/model')."""
+    if not path or "\\" in path or path.startswith((".", "/", "\\")):
+        return False
+    parts = path.split("/")
+    return len(parts) in (1, 2) and not os.path.isabs(path)
+
+
+def get_laya_agent(checkpoint_path: Optional[str] = None, device: Optional[str] = None):
     """
     Returns cached Laya agent or loads it directly via laya.load().
     Preserves single-instance memory residency on GPU/CPU.
+    If checkpoint_path is None or missing default, falls back to DEFAULT_HF_MODEL_ID.
     """
-    cache_key = (checkpoint_path, device)
+    target = checkpoint_path
+    if not target:
+        if os.path.exists(DEFAULT_CHECKPOINT):
+            target = DEFAULT_CHECKPOINT
+        else:
+            target = DEFAULT_HF_MODEL_ID
+    elif target in (DEFAULT_HF_MODEL_ID, DEFAULT_CHECKPOINT, "checkpoints/laya-finetuned") and os.path.exists(DEFAULT_CHECKPOINT):
+        target = DEFAULT_CHECKPOINT
+    elif target in (DEFAULT_CHECKPOINT, "checkpoints/laya-finetuned") and not os.path.exists(target):
+        logger.info("Local checkpoint %s not found; falling back to HF Hub %s", target, DEFAULT_HF_MODEL_ID)
+        target = DEFAULT_HF_MODEL_ID
+
+    cache_key = (target, device)
     if cache_key not in _CACHED_AGENTS:
         os.environ["USE_TF"] = "0"
         try:
@@ -61,15 +83,18 @@ def get_laya_agent(checkpoint_path: str, device: Optional[str] = None):
         except ImportError as e:
             raise JevClientError(f"laya package is required for local model inference: {e}") from e
 
-        if not os.path.exists(checkpoint_path):
+        if not os.path.exists(target) and not _is_hf_repo_id(target):
             raise JevClientError(
-                f"Laya fine-tuned checkpoint not found at: {checkpoint_path}. "
-                f"Ensure Phase 3b training is complete."
+                f"Laya fine-tuned checkpoint not found at: {target}. "
+                f"Ensure Phase 3b training is complete or specify a valid Hugging Face repo ID."
             )
 
-        logger.info("Loading fine-tuned Laya checkpoint directly from %s (device=%s)", checkpoint_path, device)
+        logger.info("Loading fine-tuned Laya checkpoint directly from %s (device=%s)", target, device)
         # CRITICAL INVARIANT: Direct laya.load(), NEVER Router()
-        _CACHED_AGENTS[cache_key] = laya.load(checkpoint_path, device=device)
+        try:
+            _CACHED_AGENTS[cache_key] = laya.load(target, device=device)
+        except Exception as e:
+            raise JevClientError(f"Failed to load Laya model from '{target}': {e}") from e
 
     return _CACHED_AGENTS[cache_key]
 
@@ -81,7 +106,12 @@ class LocalLayaClient:
     """
 
     def __init__(self, checkpoint_path: Optional[str] = None, device: Optional[str] = None):
-        self.checkpoint_path = os.path.abspath(checkpoint_path or DEFAULT_CHECKPOINT)
+        if checkpoint_path:
+            self.checkpoint_path = checkpoint_path
+        elif os.path.exists(DEFAULT_CHECKPOINT):
+            self.checkpoint_path = DEFAULT_CHECKPOINT
+        else:
+            self.checkpoint_path = DEFAULT_HF_MODEL_ID
         self.device = device
         self.agent = get_laya_agent(self.checkpoint_path, device=self.device)
 

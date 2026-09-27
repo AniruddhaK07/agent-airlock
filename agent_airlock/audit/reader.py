@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 
-from jev_gateway.audit.models import AuditEvent
+from agent_airlock.audit.models import AuditEvent
 
 logger = logging.getLogger(__name__)
 

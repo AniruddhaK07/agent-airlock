@@ -90,7 +90,7 @@ sva-harness/
 │   ├── spec.md                   # This living technical specification
 │   ├── decisions.md              # Append-only architectural decision log
 │   └── progress.md               # Phase tracking and status
-├── jev_gateway/
+├── agent_airlock/
 │   ├── __init__.py               # Package root
 │   ├── config.py                 # Pydantic/dataclass config loader & validator
 │   ├── constants.py              # System constants, defaults, version strings
@@ -316,7 +316,7 @@ For `PostToolUse`:
 1. **Race-Safe Auto-Spawn on Socket Absence**:
    If the hook script encounters `ENOENT` (socket or token file missing) or `ECONNREFUSED` (daemon not yet listening):
    - It synchronizes via a cross-platform inter-process file lock (`FileLock` on `<pid_file>.lock` using `msvcrt` on Windows and `fcntl` on POSIX).
-   - Exactly one client acquires the lock, double-checks daemon connectivity, and spawns a detached background daemon process (`python -m jev_gateway.daemon.server`).
+   - Exactly one client acquires the lock, double-checks daemon connectivity, and spawns a detached background daemon process (`python -m agent_airlock.daemon.server`).
    - Concurrent hook processes wait on the file lock (bounded by the **200ms** deadline) rather than spawning competing daemons. Once the daemon is listening, waiting processes connect to the single instance.
    - Polls socket connectivity with a strict deadline of **200ms**.
    - If connection succeeds within 200ms, the request proceeds normally.
@@ -354,9 +354,9 @@ When loopback TCP fallback is active, bearer token files require strict user-lev
 
 ## 6. Core Modules & Function Signatures
 
-### 6.1. Hard Policy Engine (`jev_gateway.policy`)
+### 6.1. Hard Policy Engine (`agent_airlock.policy`)
 
-#### Data Models (`jev_gateway/policy/models.py`)
+#### Data Models (`agent_airlock/policy/models.py`)
 ```python
 from enum import Enum
 from typing import List, Optional, Dict, Any
@@ -384,7 +384,7 @@ class PolicyResult:
     matched_pattern: Optional[str] = None
 ```
 
-#### Engine Interface (`jev_gateway/policy/engine.py`)
+#### Engine Interface (`agent_airlock/policy/engine.py`)
 ```python
 class HardPolicyEngine:
     def __init__(self, rules: List[PolicyRule]):
@@ -404,9 +404,9 @@ class HardPolicyEngine:
         ...
 ```
 
-### 6.2. Jev Integration Layer (`jev_gateway.jev`)
+### 6.2. Jev Integration Layer (`agent_airlock.jev`)
 
-#### Data Models (`jev_gateway/jev/models.py`)
+#### Data Models (`agent_airlock/jev/models.py`)
 ```python
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
@@ -421,7 +421,7 @@ class JevEvaluation:
     raw_payload: Dict[str, Any]     # Raw API response for audit logging
 ```
 
-#### Client Interface (`jev_gateway/jev/client.py`)
+#### Client Interface (`agent_airlock/jev/client.py`)
 ```python
 class JevClient:
     def __init__(self, api_key: Optional[str] = None, model: str = "jev-1.13.0", base_url: str = "https://api.typesafe.ai/v1", timeout: float = 0.400):
@@ -441,7 +441,7 @@ class JevClient:
         ...
 ```
 
-#### Local In-Process Laya Client (`jev_gateway/jev/local_laya.py`)
+#### Local In-Process Laya Client (`agent_airlock/jev/local_laya.py`)
 ```python
 class LocalLayaClient:
     def __init__(self, checkpoint_path: Optional[str] = None):
@@ -465,7 +465,7 @@ class LocalLayaClient:
         ...
 ```
 
-#### Decision Logic (`jev_gateway/jev/evaluator.py`)
+#### Decision Logic (`agent_airlock/jev/evaluator.py`)
 ```python
 class JevEvaluator:
     def __init__(self, thresholds: JevThresholds):
@@ -512,9 +512,9 @@ Due to payment and access friction with upstream cloud APIs, the probabilistic g
   - `Cold start (1st inference)`: 322.00 ms
   - Model initialization: resident singleton (~1GB VRAM).
 
-### 6.3. Circuit Breaker (`jev_gateway.circuit_breaker`)
+### 6.3. Circuit Breaker (`agent_airlock.circuit_breaker`)
 
-#### Interface (`jev_gateway/circuit_breaker/breaker.py`)
+#### Interface (`agent_airlock/circuit_breaker/breaker.py`)
 ```python
 @dataclass(frozen=True)
 class ErrorSignature:
@@ -574,9 +574,9 @@ class CircuitBreaker:
 ```
 
 
-### 6.4. Audit Logging (`jev_gateway.audit`)
+### 6.4. Audit Logging (`agent_airlock.audit`)
 
-#### Schema & Interface (`jev_gateway/audit/logger.py`)
+#### Schema & Interface (`agent_airlock/audit/logger.py`)
 ```python
 @dataclass
 class AuditEvent:
@@ -632,7 +632,7 @@ Placed in `.agents/hooks.json` or discovered customization directory:
         "hooks": [
           {
             "type": "command",
-            "command": "python -m jev_gateway.hooks.pre_tool_use",
+            "command": "python -m agent_airlock.hooks.pre_tool_use",
             "timeout": 10
           }
         ]
@@ -644,7 +644,7 @@ Placed in `.agents/hooks.json` or discovered customization directory:
         "hooks": [
           {
             "type": "command",
-            "command": "python -m jev_gateway.hooks.post_tool_use",
+            "command": "python -m agent_airlock.hooks.post_tool_use",
             "timeout": 10
           }
         ]
@@ -655,7 +655,7 @@ Placed in `.agents/hooks.json` or discovered customization directory:
 ```
 
 ### Hook Script Design (<50 lines)
-`jev_gateway/hooks/pre_tool_use.py`:
+`agent_airlock/hooks/pre_tool_use.py`:
 ```python
 import sys, json, socket
 

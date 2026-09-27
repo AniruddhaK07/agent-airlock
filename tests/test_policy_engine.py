@@ -5,9 +5,9 @@ evasion mitigations, and ambiguous fall-through to Jev.
 """
 
 import unittest
-from jev_gateway.policy.models import PolicyVerdict
-from jev_gateway.policy.engine import HardPolicyEngine
-from jev_gateway.config import GatewayConfig
+from agent_airlock.policy.models import PolicyVerdict
+from agent_airlock.policy.engine import HardPolicyEngine
+from agent_airlock.config import GatewayConfig
 
 class TestHardPolicyEngine(unittest.TestCase):
     def setUp(self):

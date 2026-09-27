@@ -35,7 +35,7 @@ def generate_hooks_config(
         post_cmd_path = f'"{post_cmd_path}"'
 
     return {
-        "jev-safety-gate": {
+        "agent-airlock": {
             "enabled": True,
             "PreToolUse": [
                 {
@@ -69,7 +69,7 @@ def install_hooks(
     python_bin: Optional[str] = None,
 ) -> Path:
     """
-    Installs or updates the jev-safety-gate hook inside .agents/hooks.json.
+    Installs or updates the agent-airlock hook inside .agents/hooks.json.
     Preserves any existing independent hooks.
     """
     out_dir = Path(target_dir).resolve()
@@ -90,11 +90,16 @@ def install_hooks(
     with open(hooks_file, "w", encoding="utf-8") as f:
         json.dump(existing_config, f, indent=2)
 
-    logger.info("Successfully installed jev-safety-gate hooks to %s", hooks_file)
+    logger.info("Successfully installed agent-airlock hooks to %s", hooks_file)
     return hooks_file
 
 def main():
-    dest = sys.argv[1] if len(sys.argv) > 1 else ".agents"
+    if "--global" in sys.argv:
+        dest = Path.home() / ".gemini" / "antigravity-cli"
+    elif len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+        dest = sys.argv[1]
+    else:
+        dest = ".agents"
     path = install_hooks(target_dir=dest)
     print(f"Installed hooks to {path}")
 

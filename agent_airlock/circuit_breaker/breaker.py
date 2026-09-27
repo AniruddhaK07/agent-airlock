@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 import time
 import logging
 
-from jev_gateway.config import CircuitBreakerConfig
-from jev_gateway.circuit_breaker.hasher import (
+from agent_airlock.config import CircuitBreakerConfig
+from agent_airlock.circuit_breaker.hasher import (
     ErrorSignature,
     create_error_signature,
     normalize_command,

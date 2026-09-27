@@ -3,16 +3,18 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jev-gateway"
+name = "agent-airlock"
 version = "0.1.0"
 description = "Deterministic policy engine and local ML safety airlock for AI agent tool execution"
 authors = [{ name = "AniruddhaK07" }]
 requires-python = ">=3.10"
 
 [project.scripts]
-jev-daemon = "jev_gateway.daemon.server:main"
-jev-hooks = "jev_gateway.hooks.installer:main"
+agent-airlock-daemon = "agent_airlock.daemon.server:main"
+agent-airlock-hooks = "agent_airlock.hooks.installer:main"
+jev-daemon = "agent_airlock.daemon.server:main"
+jev-hooks = "agent_airlock.hooks.installer:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["jev_gateway*"]
+include = ["agent_airlock*"]

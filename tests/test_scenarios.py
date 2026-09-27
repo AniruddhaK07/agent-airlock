@@ -16,12 +16,12 @@ import json
 import time
 from typing import Dict, Any, List
 
-from jev_gateway.config import GatewayConfig, DaemonConfig, CircuitBreakerConfig, AuditConfig
-from jev_gateway.daemon.server import DaemonServer
-from jev_gateway.hooks.stub_client import StubHookClient
-from jev_gateway.audit.reader import AuditReader
-from jev_gateway.jev.models import JevEvaluation, ChoiceRoute
-from jev_gateway.circuit_breaker.breaker import CircuitBreaker
+from agent_airlock.config import GatewayConfig, DaemonConfig, CircuitBreakerConfig, AuditConfig
+from agent_airlock.daemon.server import DaemonServer
+from agent_airlock.hooks.stub_client import StubHookClient
+from agent_airlock.audit.reader import AuditReader
+from agent_airlock.jev.models import JevEvaluation, ChoiceRoute
+from agent_airlock.circuit_breaker.breaker import CircuitBreaker
 
 class ScenarioMockLocalLaya:
     """Mock Local Laya client for controlled, deterministic scenario execution."""
@@ -92,10 +92,10 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        from jev_gateway.policy.engine import HardPolicyEngine
-        from jev_gateway.daemon.router import IPCRouter
-        from jev_gateway.audit.logger import AuditLogger
-        from jev_gateway.jev.evaluator import JevEvaluator
+        from agent_airlock.policy.engine import HardPolicyEngine
+        from agent_airlock.daemon.router import IPCRouter
+        from agent_airlock.audit.logger import AuditLogger
+        from agent_airlock.jev.evaluator import JevEvaluator
 
         self.audit_logger = AuditLogger(
             log_path=str(self.audit_log),
@@ -386,7 +386,7 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
         except ImportError:
             self.skipTest("laya package not installed in environment")
 
-        from jev_gateway.jev.local_laya import DEFAULT_CHECKPOINT, LocalLayaClient
+        from agent_airlock.jev.local_laya import DEFAULT_CHECKPOINT, LocalLayaClient
         if not Path(DEFAULT_CHECKPOINT).exists():
             self.skipTest(f"Live Laya checkpoint not found at {DEFAULT_CHECKPOINT}")
 

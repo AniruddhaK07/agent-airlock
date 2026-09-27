@@ -18,12 +18,12 @@ from typing import Dict, Any, Tuple, Optional
 import unittest
 from unittest.mock import patch
 
-from jev_gateway.config import GatewayConfig, DaemonConfig
-from jev_gateway.daemon.server import DaemonServer
-from jev_gateway.hooks.installer import generate_hooks_config, install_hooks
-from jev_gateway.hooks.stub_client import StubHookClient
-import jev_gateway.hooks.pre_tool_use as pre_hook
-import jev_gateway.hooks.post_tool_use as post_hook
+from agent_airlock.config import GatewayConfig, DaemonConfig
+from agent_airlock.daemon.server import DaemonServer
+from agent_airlock.hooks.installer import generate_hooks_config, install_hooks
+from agent_airlock.hooks.stub_client import StubHookClient
+import agent_airlock.hooks.pre_tool_use as pre_hook
+import agent_airlock.hooks.post_tool_use as post_hook
 
 class TestHookScriptConstraints(unittest.TestCase):
     """Verifies that hook scripts adhere to the strict <50 lines architectural budget."""
@@ -49,8 +49,8 @@ class TestHookInstallerAndConfig(unittest.TestCase):
 
     def test_generate_hooks_config_schema(self):
         cfg = generate_hooks_config(python_bin="python3")
-        self.assertIn("jev-safety-gate", cfg)
-        gate = cfg["jev-safety-gate"]
+        self.assertIn("agent-airlock", cfg)
+        gate = cfg["agent-airlock"]
         self.assertTrue(gate["enabled"])
         self.assertIn("PreToolUse", gate)
         self.assertIn("PostToolUse", gate)
@@ -70,8 +70,8 @@ class TestHookInstallerAndConfig(unittest.TestCase):
 
         loaded = json.loads(installed.read_text(encoding="utf-8"))
         self.assertIn("custom-linter", loaded, "Pre-existing hook was erased!")
-        self.assertIn("jev-safety-gate", loaded)
-        self.assertTrue(loaded["jev-safety-gate"]["enabled"])
+        self.assertIn("agent-airlock", loaded)
+        self.assertTrue(loaded["agent-airlock"]["enabled"])
 
 class TestHookStdinStdoutCompliance(unittest.TestCase):
     """Verifies stdin/stdout protocol compliance and strict fail-closed fallback."""

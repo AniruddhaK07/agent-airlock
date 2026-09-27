@@ -13,13 +13,13 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-from jev_gateway.audit.models import AuditEvent
-from jev_gateway.audit.logger import AuditLogger
-from jev_gateway.audit.reader import AuditReader
-from jev_gateway.policy.engine import HardPolicyEngine
-from jev_gateway.policy.models import PolicyRule, PolicyVerdict
-from jev_gateway.daemon.router import IPCRouter, WorkspaceState
-from jev_gateway.config import CircuitBreakerConfig
+from agent_airlock.audit.models import AuditEvent
+from agent_airlock.audit.logger import AuditLogger
+from agent_airlock.audit.reader import AuditReader
+from agent_airlock.policy.engine import HardPolicyEngine
+from agent_airlock.policy.models import PolicyRule, PolicyVerdict
+from agent_airlock.daemon.router import IPCRouter, WorkspaceState
+from agent_airlock.config import CircuitBreakerConfig
 
 class TestAuditEventModel(unittest.TestCase):
     """Verifies AuditEvent schema serialization and parsing."""

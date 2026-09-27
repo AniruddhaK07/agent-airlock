@@ -1,4 +1,4 @@
-# global-config.yaml — Global Configuration for Jev Airlock
+# global-config.yaml — Global Configuration for Agent Airlock
 # Default location: ~/.gemini/antigravity-cli/config.yaml
 
 version: "1.0"
@@ -17,8 +17,8 @@ daemon:
 
 # ML Safety Airlock Configuration
 jev:
-  provider: "auto"        # "auto" (local checkpoint if found, else remote/Stage-1) | "local" | "remote" | "none"
-  checkpoint_path: "checkpoints/laya-finetuned" # Path to local weights or Hugging Face Hub model ID
+  provider: "auto"        # "auto" (local checkpoint if found, else Hugging Face Hub / remote) | "local" | "remote" | "none"
+  checkpoint_path: "ruddh/agent-airlock-laya" # Hugging Face Hub model ID or local directory path
   device: null            # null (auto-detect CUDA/MPS/XPU/CPU) | "cuda" | "cpu" | "mps"
   model: "jev-1.13.0"
   api_key_env: "TYPESAFE_API_KEY"

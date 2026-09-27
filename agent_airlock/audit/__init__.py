@@ -3,8 +3,8 @@ Audit logging subsystem for Jev Airlock safety gateway.
 Provides immutable append-only JSONL logging and verification tooling.
 """
 
-from jev_gateway.audit.models import AuditEvent
-from jev_gateway.audit.logger import AuditLogger
-from jev_gateway.audit.reader import AuditReader
+from agent_airlock.audit.models import AuditEvent
+from agent_airlock.audit.logger import AuditLogger
+from agent_airlock.audit.reader import AuditReader
 
 __all__ = ["AuditEvent", "AuditLogger", "AuditReader"]

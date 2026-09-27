@@ -7,8 +7,8 @@ from pathlib import Path
 import json
 import yaml
 from pydantic import BaseModel, Field
-from jev_gateway.policy.models import PolicyRule, PolicyVerdict
-from jev_gateway.policy.default_rules import get_default_rules
+from agent_airlock.policy.models import PolicyRule, PolicyVerdict
+from agent_airlock.policy.default_rules import get_default_rules
 
 class RuleConfig(BaseModel):
     id: str
@@ -43,7 +43,7 @@ class JevThresholdsConfig(BaseModel):
 
 class JevConfig(BaseModel):
     provider: str = "auto"  # "auto" | "none" | "local" | "remote"
-    checkpoint_path: str = "checkpoints/laya-finetuned"
+    checkpoint_path: str = "ruddh/agent-airlock-laya"
     device: Optional[str] = None  # None (auto) | "cuda" | "cpu" | "mps"
     model: str = "jev-1.13.0"
     api_key_env: str = "TYPESAFE_API_KEY"
@@ -119,9 +119,13 @@ def load_config(config_path: Optional[str] = None) -> GatewayConfig:
     candidates = []
     if config_path:
         candidates.append(Path(config_path))
+    candidates.append(Path(".airlock-policy.yaml"))
+    candidates.append(Path(".airlock-policy.yml"))
+    candidates.append(Path(".airlock-policy.json"))
     candidates.append(Path(".jev-policy.yaml"))
     candidates.append(Path(".jev-policy.yml"))
     candidates.append(Path(".jev-policy.json"))
+    candidates.append(Path("~/.gemini/antigravity-cli/airlock-policy.yaml").expanduser())
     candidates.append(Path("~/.gemini/antigravity-cli/jev-policy.yaml").expanduser())
 
     for path in candidates:

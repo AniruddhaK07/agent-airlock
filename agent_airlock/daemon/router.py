@@ -14,8 +14,8 @@ import time
 import uuid
 import logging
 
-from jev_gateway.policy.engine import HardPolicyEngine
-from jev_gateway.policy.models import PolicyVerdict, PolicyResult
+from agent_airlock.policy.engine import HardPolicyEngine
+from agent_airlock.policy.models import PolicyVerdict, PolicyResult
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class IPCRouter:
         if norm_key not in self.workspaces:
             cb = None
             try:
-                from jev_gateway.circuit_breaker.breaker import CircuitBreaker
+                from agent_airlock.circuit_breaker.breaker import CircuitBreaker
                 cb = CircuitBreaker(
                     workspace_root=norm_key,
                     config=self.circuit_breaker_config,
@@ -182,7 +182,7 @@ class IPCRouter:
                 }
                 if self.audit_logger:
                     try:
-                        from jev_gateway.audit.models import AuditEvent
+                        from agent_airlock.audit.models import AuditEvent
                         tool_call = payload.get("toolCall", {})
                         ev = AuditEvent(
                             event_id=audit_id,
@@ -477,7 +477,7 @@ class IPCRouter:
             return
 
         try:
-            from jev_gateway.audit.models import AuditEvent
+            from agent_airlock.audit.models import AuditEvent
             tool_call = payload.get("toolCall", {})
             event = AuditEvent(
                 event_id=res.get("auditId") or self._generate_audit_id(),
@@ -512,7 +512,7 @@ class IPCRouter:
             return
 
         try:
-            from jev_gateway.audit.models import AuditEvent
+            from agent_airlock.audit.models import AuditEvent
             tool_call = payload.get("toolCall", {})
             event = AuditEvent(
                 event_id=audit_id,

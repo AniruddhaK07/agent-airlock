@@ -4,7 +4,7 @@ Default built-in rules for the Hard Policy Engine.
 
 from typing import List
 import re
-from jev_gateway.policy.models import PolicyRule, PolicyVerdict
+from agent_airlock.policy.models import PolicyRule, PolicyVerdict
 
 def get_default_rules() -> List[PolicyRule]:
     """

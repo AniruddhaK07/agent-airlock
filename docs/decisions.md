@@ -557,8 +557,26 @@ Model: Flash
 ## [Phase 8] Checkpoint Distribution Strategy & Safety Disclosure — 2026-09-27
 Context: A git clone of `jev-airlock` contains code, deterministic rules, and the fine-tuning pipeline, but git ignores raw binary weights (`checkpoints/laya-finetuned`). Public users need an immediate way to evaluate the system, but must not be misled into treating pre-trained weights as a certified safety authority.
 Decision:
-  1. Default Distribution: Provide pre-trained weights hosted on Hugging Face Hub (`AniruddhaK/jev-airlock-laya`), loaded automatically by `laya.load()` when a local checkpoint directory is absent, while preserving `checkpoints/laya-finetuned` as the primary local path.
+  1. Default Distribution: Provide pre-trained weights hosted on Hugging Face Hub (`ruddh/agent-airlock-laya`), loaded automatically by `laya.load()` when a local checkpoint directory is absent, while preserving `checkpoints/laya-finetuned` as the primary local path.
   2. Full Starter Pipeline Shipped: Ship `data/training_examples.jsonl`, `data/starter_dataset.json`, and fine-tuning scripts in the repository so any user can inspect every training example and retrain their own checkpoint.
   3. Pure Deterministic Baseline: If no weights are installed and no internet is available, the daemon operates in Stage 1 mode (deterministic hard-allow and hard-deny rules), strictly failing closed to human confirmation (`ask`) for all ambiguous commands.
   4. Mandatory Safety Framing: Prominently state in `README.md` that pre-trained weights represent one engineer's subjective risk tolerance and labeling judgment. Users must review policies and re-fine-tune on domain-specific data prior to production deployment.
 Model: Flash
+
+## [Phase 8] Project Renaming to Agent Airlock & CPU Latency User Transparency — 2026-09-27
+Context: The project was initially structured under the working title `jev-airlock` and package namespace `jev_gateway` reflecting its early integration with Typesafe's remote Jev API. Following Phase 3b/3c local fine-tuning and Phase 8 distribution, the tool operates as a fully autonomous, local, and vendor-independent safety airlock for AI coding assistants.
+Decisions:
+  1. Package & Repository Renaming (`jev_gateway` -> `agent_airlock`):
+     - Deliberate architectural decision to prevent vendor-name confusion and decouple the core tool identity from Typesafe Jev.
+     - Renamed package directory `jev_gateway/` to `agent_airlock/` and updated all internal imports, entrypoints, and test suites.
+     - Updated `pyproject.toml` package name to `agent-airlock` with dual CLI script entrypoints (`agent-airlock-daemon`, `agent-airlock-hooks`, alongside backward-compatible `jev-daemon`, `jev-hooks`).
+     - Updated hook configuration key in installer and `.agents/hooks.json` from `jev-safety-gate` to `agent-airlock`.
+     - Preserved all historical entries in `docs/decisions.md` unchanged as an accurate factual record of project evolution.
+     - Preserved Hugging Face model repository reference `ruddh/agent-airlock-laya` exactly.
+  2. CPU Latency Documentation Fix (`README.md`):
+     - Identified that framing CPU fallback purely through a configuration recommendation (`request_timeout_seconds >= 5.0`) obscured the real interactive user experience on non-GPU hardware.
+     - Updated `README.md` to explicitly differentiate tier latencies:
+       - Layer 1 hard-allow and hard-deny commands remain sub-millisecond (< 1 ms) regardless of CPU or GPU hardware.
+       - Ambiguous operations routed to Layer 3 ML evaluation pause for 1.0 – 1.5 seconds (empirically measured: 1,250 ms mean, 1,462 ms peak) on CPU-only hosts.
+Model: Flash
+

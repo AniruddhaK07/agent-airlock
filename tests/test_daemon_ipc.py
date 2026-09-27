@@ -11,10 +11,10 @@ import json
 import socket
 from pathlib import Path
 
-from jev_gateway.config import GatewayConfig, DaemonConfig
-from jev_gateway.daemon.server import DaemonServer
-from jev_gateway.daemon.pid import PIDManager
-from jev_gateway.hooks.stub_client import StubHookClient
+from agent_airlock.config import GatewayConfig, DaemonConfig
+from agent_airlock.daemon.server import DaemonServer
+from agent_airlock.daemon.pid import PIDManager
+from agent_airlock.hooks.stub_client import StubHookClient
 
 class TestDaemonIPC(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -388,8 +388,8 @@ class TestDaemonIPC(unittest.IsolatedAsyncioTestCase):
 import sys, time, asyncio
 from pathlib import Path
 sys.path.insert(0, r"{repo_root}")
-from jev_gateway.config import GatewayConfig, DaemonConfig
-from jev_gateway.daemon.server import DaemonServer
+from agent_airlock.config import GatewayConfig, DaemonConfig
+from agent_airlock.daemon.server import DaemonServer
 
 counter = Path(r"{counter_file}")
 val = int(counter.read_text().strip()) if counter.exists() else 0
@@ -519,7 +519,7 @@ asyncio.run(server.run_forever())
             await asyncio.sleep(0.300)
             class MockClient:
                 def evaluate_ambiguous_tool(self, tool_name, tool_args, context=None):
-                    from jev_gateway.jev.models import JevEvaluation
+                    from agent_airlock.jev.models import JevEvaluation
                     return JevEvaluation(
                         score_blast_radius=1.0,
                         score_confidence=0.95,
@@ -603,7 +603,7 @@ asyncio.run(server.run_forever())
             pid_mgr = PIDManager(pid_file=stale_pid_file, token_file=stale_token_file)
 
             # is_running should detect that while proc.pid is alive, its cmdline
-            # does NOT match 'jev_gateway.daemon.server' / 'jev-daemon'
+            # does NOT match 'agent_airlock.daemon.server' / 'jev-daemon'
             self.assertFalse(pid_mgr.is_running())
             # Stale PID file must have been automatically cleaned up
             self.assertFalse(stale_pid_file.exists())
@@ -620,16 +620,16 @@ asyncio.run(server.run_forever())
         do not attempt to touch ctypes.windll and correctly parse process signatures.
         """
         from unittest.mock import patch
-        from jev_gateway.daemon.pid import get_process_cmdline, is_process_running
+        from agent_airlock.daemon.pid import get_process_cmdline, is_process_running
 
         # Test Linux branch reading /proc/{pid}/cmdline
         with patch("sys.platform", "linux"):
-            fake_proc_cmdline = "python3\0-m\0jev_gateway.daemon.server\0--port\08080\0"
+            fake_proc_cmdline = "python3\0-m\0agent_airlock.daemon.server\0--port\08080\0"
             with patch("pathlib.Path.exists", return_value=True), \
                  patch("pathlib.Path.read_bytes", return_value=fake_proc_cmdline.encode("utf-8")), \
                  patch("os.kill", return_value=None):
                 cmdline = get_process_cmdline(12345)
-                self.assertIn("jev_gateway.daemon.server", cmdline)
+                self.assertIn("agent_airlock.daemon.server", cmdline)
                 self.assertTrue(is_process_running(12345))
 
         # Test macOS / BSD branch running ps -p {pid} -o command=
@@ -637,9 +637,9 @@ asyncio.run(server.run_forever())
             with patch("subprocess.run") as mock_subproc, \
                  patch("os.kill", return_value=None):
                 mock_subproc.return_value.returncode = 0
-                mock_subproc.return_value.stdout = "/usr/bin/python3 -m jev_gateway.daemon.server\n"
+                mock_subproc.return_value.stdout = "/usr/bin/python3 -m agent_airlock.daemon.server\n"
                 cmdline = get_process_cmdline(12345)
-                self.assertIn("jev_gateway.daemon.server", cmdline)
+                self.assertIn("agent_airlock.daemon.server", cmdline)
                 self.assertTrue(is_process_running(12345))
 
     async def test_hard_policy_latency_non_zero_in_audit(self):

@@ -12,7 +12,7 @@ _root = str(Path(__file__).resolve().parents[2])
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from jev_gateway.hooks.stub_client import StubHookClient
+from agent_airlock.hooks.stub_client import StubHookClient
 
 def main():
     try:

@@ -1,4 +1,4 @@
-# .jev-policy.yaml — Workspace Policy Configuration for Jev Airlock
+# .airlock-policy.yaml — Workspace Policy Configuration for Agent Airlock
 # Place this file in the root of your workspace/repository to tailor rules
 # to your project's build system, scripts, and workflows.
 

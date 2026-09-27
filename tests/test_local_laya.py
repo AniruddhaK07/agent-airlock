@@ -20,18 +20,18 @@ try:
 except ImportError:
     LAYA_AVAILABLE = False
 
-from jev_gateway.config import (
+from agent_airlock.config import (
     GatewayConfig,
     DaemonConfig,
     JevConfig,
     JevThresholdsConfig,
 )
-from jev_gateway.daemon.server import DaemonServer
-from jev_gateway.hooks.stub_client import StubHookClient
-from jev_gateway.jev.models import GateDecision, ChoiceRoute, JevEvaluation
-from jev_gateway.jev.evaluator import JevEvaluator
-from jev_gateway.jev.local_laya import LocalLayaClient, DEFAULT_CHECKPOINT
-from jev_gateway.jev.client import JevClientError
+from agent_airlock.daemon.server import DaemonServer
+from agent_airlock.hooks.stub_client import StubHookClient
+from agent_airlock.jev.models import GateDecision, ChoiceRoute, JevEvaluation
+from agent_airlock.jev.evaluator import JevEvaluator
+from agent_airlock.jev.local_laya import LocalLayaClient, DEFAULT_CHECKPOINT
+from agent_airlock.jev.client import JevClientError
 
 
 @pytest.mark.skipif(not LAYA_AVAILABLE, reason="laya package not installed in environment")
