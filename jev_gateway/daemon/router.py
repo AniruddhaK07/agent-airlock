@@ -54,6 +54,20 @@ class IPCRouter:
         self.audit_logger = audit_logger
         self.start_time = time.time()
         self.workspaces: Dict[str, WorkspaceState] = {}
+        self.model_ready: bool = jev_client is not None
+        self.model_loading: bool = False
+
+    def set_jev_client(self, client: Any) -> None:
+        """
+        Sets the initialized Jev/Laya client once background loading is complete.
+        Marks model_ready=True and propagates to all active workspace circuit breakers.
+        """
+        self.jev_client = client
+        self.model_ready = True
+        self.model_loading = False
+        for ws in self.workspaces.values():
+            if ws.circuit_breaker and hasattr(ws.circuit_breaker, "local_laya_client"):
+                ws.circuit_breaker.local_laya_client = client
 
     def get_workspace_state(self, workspace_root: str) -> WorkspaceState:
         """
@@ -211,7 +225,7 @@ class IPCRouter:
         ws_state: WorkspaceState,
         version: str,
     ) -> Dict[str, Any]:
-        t_start = time.time()
+        t_start = time.perf_counter()
         tool_call = payload.get("toolCall", {})
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
@@ -221,7 +235,7 @@ class IPCRouter:
         policy_result: PolicyResult = self.policy_engine.evaluate(tool_name, tool_args)
 
         if policy_result.verdict == PolicyVerdict.DENY:
-            latency_ms = (time.time() - t_start) * 1000.0
+            latency_ms = (time.perf_counter() - t_start) * 1000.0
             res = {
                 "version": version,
                 "status": "success",
@@ -236,7 +250,7 @@ class IPCRouter:
             self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
             return res
         elif policy_result.verdict == PolicyVerdict.ALLOW:
-            latency_ms = (time.time() - t_start) * 1000.0
+            latency_ms = (time.perf_counter() - t_start) * 1000.0
             res = {
                 "version": version,
                 "status": "success",
@@ -251,7 +265,7 @@ class IPCRouter:
             self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
             return res
         elif policy_result.rule_id == "unparseable-command-syntax":
-            latency_ms = (time.time() - t_start) * 1000.0
+            latency_ms = (time.perf_counter() - t_start) * 1000.0
             res = {
                 "version": version,
                 "status": "fail_closed",
@@ -275,7 +289,7 @@ class IPCRouter:
                     step_idx=payload.get("stepIdx", 0),
                 )
                 if cb_res.is_tripped:
-                    latency_ms = (time.time() - t_start) * 1000.0
+                    latency_ms = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
                         "status": "success",
@@ -296,9 +310,9 @@ class IPCRouter:
                     )
                     return res
 
-            # 2. Route through Jev Integration Layer if configured
-            if self.jev_client and self.jev_evaluator:
-                t0 = time.time()
+            # 2. Route through Jev Integration Layer if configured and ready
+            if self.jev_client and self.jev_evaluator and self.model_ready:
+                t0 = time.perf_counter()
                 try:
                     context = {
                         "workspace_root": ws_state.workspace_root,
@@ -310,7 +324,7 @@ class IPCRouter:
                         tool_args=tool_args,
                         context=context,
                     )
-                    latency = (time.time() - t0) * 1000.0
+                    latency = (time.perf_counter() - t0) * 1000.0
                     jev_decision = self.jev_evaluator.decide(
                         evaluation=evaluation,
                         latency_ms=latency,
@@ -320,7 +334,7 @@ class IPCRouter:
                         if hasattr(jev_decision.decision, "value")
                         else str(jev_decision.decision)
                     )
-                    total_latency = (time.time() - t_start) * 1000.0
+                    total_latency = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
                         "status": "success",
@@ -342,7 +356,7 @@ class IPCRouter:
                     return res
                 except Exception as e:
                     logger.warning("Jev evaluation error, failing closed to ask: %s", e)
-                    latency = (time.time() - t0) * 1000.0
+                    latency = (time.perf_counter() - t0) * 1000.0
                     jev_decision = self.jev_evaluator.decide(
                         evaluation=None,
                         error=e,
@@ -353,7 +367,7 @@ class IPCRouter:
                         if hasattr(jev_decision.decision, "value")
                         else str(jev_decision.decision)
                     )
-                    total_latency = (time.time() - t_start) * 1000.0
+                    total_latency = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
                         "status": "fail_closed",
@@ -372,13 +386,20 @@ class IPCRouter:
                     )
                     return res
             else:
-                # No Jev client configured -> default fail-closed to "ask"
-                latency_ms = (time.time() - t_start) * 1000.0
+                # No Jev client configured or model still loading in background -> fail-closed to "ask"
+                latency_ms = (time.perf_counter() - t_start) * 1000.0
+                if self.model_loading and not self.model_ready:
+                    status_val = "fail_closed"
+                    reason_val = "Model initializing in background; failing closed to human confirmation."
+                else:
+                    status_val = "success"
+                    reason_val = policy_result.reason or "Ambiguous action requires user confirmation."
+
                 res = {
                     "version": version,
-                    "status": "success",
+                    "status": status_val,
                     "decision": "ask",
-                    "reason": policy_result.reason or "Ambiguous action requires user confirmation.",
+                    "reason": reason_val,
                     "ruleId": None,
                     "permissionOverrides": [],
                     "overwrite": None,
@@ -394,6 +415,7 @@ class IPCRouter:
         ws_state: WorkspaceState,
         version: str,
     ) -> Dict[str, Any]:
+        t_start = time.perf_counter()
         audit_id = self._generate_audit_id()
         # Record into partitioned workspace buffer
         ws_state.audit_buffer.append({
@@ -431,13 +453,14 @@ class IPCRouter:
                 step_idx=step_idx,
             )
 
+        latency_ms = (time.perf_counter() - t_start) * 1000.0
         res = {
             "version": version,
             "status": "success",
             "auditId": audit_id,
             "workspaceRoot": ws_state.workspace_root,
         }
-        self._log_post_tool_event(payload, ws_state, audit_id, error_msg)
+        self._log_post_tool_event(payload, ws_state, audit_id, error_msg, latency_ms=latency_ms)
         return res
 
     def _log_pre_tool_event(
@@ -470,7 +493,7 @@ class IPCRouter:
                 jev_evaluation=jev_evaluation,
                 final_decision=str(res.get("decision", "ask")),
                 reason=str(res.get("reason", "")),
-                latency_ms=round(float(latency_ms), 2),
+                latency_ms=round(float(latency_ms), 3),
                 workspace_root=ws_state.workspace_root,
             )
             self.audit_logger.log(event)
@@ -483,6 +506,7 @@ class IPCRouter:
         ws_state: WorkspaceState,
         audit_id: str,
         error_msg: Optional[str] = None,
+        latency_ms: float = 0.0,
     ) -> None:
         if not self.audit_logger:
             return
@@ -504,7 +528,7 @@ class IPCRouter:
                 jev_evaluation=None,
                 final_decision="recorded",
                 reason=str(error_msg or "Execution recorded successfully"),
-                latency_ms=0.0,
+                latency_ms=round(float(latency_ms), 3),
                 workspace_root=ws_state.workspace_root,
             )
             self.audit_logger.log(event)

@@ -31,6 +31,7 @@ class DaemonConfig(BaseModel):
     pid_file: str = "~/.gemini/antigravity-cli/jev-daemon.pid"
     transport: str = "auto"  # "auto" | "unix" | "tcp"
     request_timeout_seconds: float = 5.0
+    spawn_timeout_seconds: float = 1.0
     log_level: str = "INFO"
 
 class JevThresholdsConfig(BaseModel):
@@ -41,8 +42,9 @@ class JevThresholdsConfig(BaseModel):
     default: str = "ask"
 
 class JevConfig(BaseModel):
-    provider: str = "none"  # "none" | "local" | "remote"
+    provider: str = "auto"  # "auto" | "none" | "local" | "remote"
     checkpoint_path: str = "checkpoints/laya-finetuned"
+    device: Optional[str] = None  # None (auto) | "cuda" | "cpu" | "mps"
     model: str = "jev-1.13.0"
     api_key_env: str = "TYPESAFE_API_KEY"
     base_url: str = "https://api.typesafe.ai/v1"

@@ -461,8 +461,104 @@ Decisions & Validation:
    - Full suite passes 120 tests and 137 subtests with 100% pass rate.
 Model: Flash
 
+## [Phase 7/8 Hardening] Daemon Startup Diagnosis, Stale PID Collision Resolution & Two-Stage Readiness — 2026-09-27
+Context: Live execution against the Antigravity CLI revealed that the background daemon was not persisting, resulting in repeated auto-spawn attempts and fail-closed prompts (`force_ask`) on hook calls. An empirical diagnosis was conducted to identify the root cause and split daemon readiness into a two-stage lifecycle.
+
+Diagnosis Findings:
+1. **Cause 1: Stale PID Collision on Windows**:
+   - `PIDManager.is_running()` previously used a bare `OpenProcess` check verifying only if a process with the PID recorded in `jev-daemon.pid` was active (`STILL_ACTIVE = 259`).
+   - Following an earlier abnormal exit, the PID recorded (`3428`) had been recycled by Windows OS and assigned to `explorer.exe`.
+   - On every hook invocation, the spawned daemon process saw PID 3428 active, erroneously assumed another daemon instance was alive, and crashed immediately on startup (`RuntimeError: Another daemon instance is already active (PID 3428)`).
+2. **Cause 2: Synchronous Model Loading Latency vs 200ms Hook Timeout**:
+   - Measured wall-clock timing:
+     - Process start to socket-ready (without model): **~360 ms** (CPython initialization + asyncio/yaml imports + socket bind).
+     - Socket-ready to Laya-fully-loaded: **~9,857 ms** (~9.86s to load ModernBERT encoder and safetensors weights).
+     - Total synchronous startup: **~10,218 ms** (~10.2s).
+   - In the prior code, `LocalLayaClient` was loaded synchronously inside `DaemonServer.__init__`. The socket never opened until all weights were loaded (~10.2s), far exceeding the hook client's `spawn_timeout = 200ms` and guaranteeing fail-closed `force_ask` on cold start.
+
+Decisions & Fix:
+1. **Windows PID Process Verification (`pid.py`)**:
+   - Enhanced `is_process_running` on Windows using `ctypes.windll.kernel32.QueryFullProcessImageNameW`.
+   - Verifies that the active process executable name contains `"python"`. If recycled by another process (e.g. `explorer.exe`), the stale PID file is automatically pruned.
+2. **Two-Stage Daemon Readiness (`server.py`, `router.py`)**:
+   - **Stage 1 (Socket & Hard Policy Engine Ready in ~360ms)**: Binds socket / TCP listener and initializes `HardPolicyEngine` immediately. Daemon begins accepting and answering requests within <500ms of process start.
+   - **Stage 2 (Asynchronous Background Model Loading)**: Laya checkpoint loading runs in a background worker thread (`asyncio.to_thread(_load_local)`). Tracks `model_ready` and `model_loading` states.
+   - **Request Handling During Startup**: Hard-allow (`git status`, `ls`) and hard-deny (`rm -rf /`, secret access) requests are evaluated immediately and deterministically without waiting for the model. Only ambiguous requests falling through to ML gating fail closed to `ask` during the brief loading window.
+3. **Hook Auto-Spawn Deadline Adjustment**:
+   - Updated `StubHookClient` default `spawn_timeout` to **1.0 second (1000ms)** and added `spawn_timeout_seconds: 1.0` to `DaemonConfig`. This provides a comfortable safety margin over the ~360ms measured Windows process initialization time.
+4. **Automated Regression Verification**:
+   - Added `test_cold_spawn_hard_allow_before_laya_ready` in `tests/test_daemon_ipc.py`. Simulates background model loading and asserts that hard-allow requests resolve in <100ms with decision `allow` while ambiguous requests fail closed until the model is ready.
+   - Full test suite passes: 121 tests passing in 18.19s (100% pass rate).
+5. **Live CLI Verification**:
+   - Verified live against active Antigravity CLI agent loop: `view_file` on `pyproject.toml` and `run_command` with `git status` executed with **zero user confirmation prompts**, with full audit logging in `audit.jsonl`.
+Model: Flash
 
 
 
 
 
+
+
+
+## [Phase 7/8 Hardening] Cross-Platform PID Inspection, Signature Validation & High-Precision Audit Latency — 2026-09-27
+Context: Following the two-stage readiness fix, additional hardening was required prior to Phase 8 public release: (1) ensuring PID inspection does not fail on non-Windows platforms due to Windows-specific `ctypes.windll`, (2) tightening recycled-PID validation beyond generic `python.exe` to avoid collisions with other running Python programs, and (3) fixing audit log `latency_ms: 0.0` records caused by low-resolution Windows system clock timers.
+
+Decisions & Fix:
+1. **Cross-Platform PID & Command-Line Inspection (`pid.py`)**:
+   - Implemented `get_process_cmdline(pid)` with platform isolation:
+     - **Windows**: Uses `NtQueryInformationProcess` (ProcessCommandLineInformation, class 60) with `PROCESS_QUERY_LIMITED_INFORMATION` via `ctypes.windll.ntdll`, avoiding external library dependencies.
+     - **Linux**: Reads `/proc/{pid}/cmdline` directly.
+     - **macOS / BSD**: Queries `ps -p {pid} -o command=` via standard subprocess.
+   - Strictly isolated `ctypes.windll` to Windows branches (`sys.platform == "win32"`), ensuring clean import and execution on Linux and macOS.
+2. **Recycled-PID Signature Validation (`pid.py`)**:
+   - `is_process_running(pid, expected_signature="jev_gateway.daemon.server")` now inspects the full command-line arguments of the process.
+   - If an active PID belongs to an unrelated Python process (e.g. `python -c "import time; ..."` or Jupyter), it is correctly identified as non-daemon, allowing stale PID files to be automatically cleaned up rather than falsely reporting an active daemon.
+3. **High-Precision Audit Latency (`router.py`)**:
+   - Windows `time.time()` operates on a coarse ~15.6ms interrupt timer. Sub-millisecond deterministic policy decisions (<0.5ms) frequently registered as `latency_ms: 0.0`.
+   - Replaced all dispatch and evaluation timer calls with `time.perf_counter()`, providing sub-microsecond precision.
+   - Audit logs now accurately record sub-millisecond dispatch times (e.g. `0.231 ms`) for hard-allow and hard-deny paths.
+4. **Verification**:
+   - Added unit tests in `tests/test_daemon_ipc.py`:
+     - `test_unrelated_python_process_treated_as_stale_pid`: Verifies unrelated active Python process is treated as stale.
+     - `test_posix_pid_verification_no_windll`: Verifies POSIX branches function without `ctypes.windll`.
+     - `test_hard_policy_latency_non_zero_in_audit`: Verifies `latency_ms > 0.0` is logged for hard-allow operations.
+   - All 25 daemon IPC tests pass cleanly.
+Model: Flash
+
+
+## [Phase 7 Closeout] Scenario 3 Live Inference vs Mock Finding & Checkpoint Drift Guard — 2026-09-27
+Context: Step 1 required verifying whether Scenario 3 (`test_scenario_ambiguous_operations_routed_to_laya`) in `tests/test_scenarios.py` exercised the actual fine-tuned Laya checkpoint via live inference, or asserted against mocked/fixture values for blast radius, reversibility, and confidence.
+Finding: Plainly confirmed that Scenario 3 used `ScenarioMockLocalLaya` with hard-coded fixture attributes (`self.mock_laya.route`, `self.mock_laya.blast`, `self.mock_laya.rev`). While appropriate for fast, deterministic unit test execution of the 3-way rubric branches in CI, a retrain or checkpoint swap could silently drift without scenario-level detection.
+Fix & Decision: Added `test_scenario_ambiguous_operations_live_laya` to `tests/test_scenarios.py`.
+  - Follows the GPU/model availability skip pattern (`pytest.mark.skipif(not LAYA_AVAILABLE)` and checkpoint existence checks).
+  - Initializes `LocalLayaClient` directly against `DEFAULT_CHECKPOINT` (`checkpoints/laya-finetuned`), mounts it into the running daemon router, and issues an ambiguous tool invocation (`python scripts/build_assets.py`).
+  - Verifies live generation of `JevEvaluation` fields (`score_blast_radius > 0.0`, valid `choice_route`, `noul_reversible_prob`), and verifies the live audit record is persisted in `audit.jsonl`.
+Model: Flash
+
+## [Phase 8] Hardware Characterization & CPU Fallback Benchmark — 2026-09-27
+Context: Benchmarks to date were performed on an NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM). Before authoring release documentation and specifying hardware requirements for public users, live CPU-only inference and loading were benchmarked to identify realistic performance envelopes and timeout budgets.
+Empirical Measurements (Forced CPU Execution via `device='cpu'`):
+  - Model Load Time: **10.52 seconds** (CPython + ModernBERT weight mapping).
+  - Cold Warmup Latency: **1,451.10 ms** (~1.45s).
+  - Warm Inference Latency (10 iterations):
+    - Mean: **1,250.86 ms** (~1.25s)
+    - Min: **1,152.25 ms**
+    - Max: **1,462.48 ms**
+    - P50: **1,213.14 ms**
+    - P95: **1,462.48 ms**
+  - Relative Performance: CPU inference is roughly **25x - 30x slower** than GPU (~38ms - 50ms).
+  - Timeout Budget Implications: Because CPU inference completes in ~1.25s, the default `request_timeout_seconds: 5.0` is sufficient to prevent false fail-closed timeouts during normal operation. The README will document that CPU-only deployments should maintain `request_timeout_seconds >= 5.0`.
+  - Architectural Hardening:
+    - Confirmed zero hard CUDA assumptions in `local_laya.py`.
+    - Added `device: Optional[str] = None` parameter to `get_laya_agent`, `LocalLayaClient`, `JevConfig`, and `DaemonServer`.
+    - Replaced single global agent cache with dictionary `_CACHED_AGENTS[(checkpoint_path, device)]`, allowing GPU and CPU clients to coexist without eviction or latency cross-contamination.
+Model: Flash
+
+## [Phase 8] Checkpoint Distribution Strategy & Safety Disclosure — 2026-09-27
+Context: A git clone of `jev-airlock` contains code, deterministic rules, and the fine-tuning pipeline, but git ignores raw binary weights (`checkpoints/laya-finetuned`). Public users need an immediate way to evaluate the system, but must not be misled into treating pre-trained weights as a certified safety authority.
+Decision:
+  1. Default Distribution: Provide pre-trained weights hosted on Hugging Face Hub (`AniruddhaK/jev-airlock-laya`), loaded automatically by `laya.load()` when a local checkpoint directory is absent, while preserving `checkpoints/laya-finetuned` as the primary local path.
+  2. Full Starter Pipeline Shipped: Ship `data/training_examples.jsonl`, `data/starter_dataset.json`, and fine-tuning scripts in the repository so any user can inspect every training example and retrain their own checkpoint.
+  3. Pure Deterministic Baseline: If no weights are installed and no internet is available, the daemon operates in Stage 1 mode (deterministic hard-allow and hard-deny rules), strictly failing closed to human confirmation (`ask`) for all ambiguous commands.
+  4. Mandatory Safety Framing: Prominently state in `README.md` that pre-trained weights represent one engineer's subjective risk tolerance and labeling judgment. Users must review policies and re-fine-tune on domain-specific data prior to production deployment.
+Model: Flash

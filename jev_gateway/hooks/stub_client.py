@@ -40,7 +40,7 @@ class StubHookClient:
         timeout: Optional[float] = None,
         enable_autospawn: bool = True,
         spawn_command: Optional[List[str]] = None,
-        spawn_timeout: float = 0.200,  # 200ms
+        spawn_timeout: Optional[float] = None,
         default_workspace: Optional[str] = None,
     ):
         cfg = config or load_config()
@@ -53,7 +53,11 @@ class StubHookClient:
         self.timeout = timeout or cfg.daemon.request_timeout_seconds
         self.enable_autospawn = enable_autospawn
         self.spawn_command = spawn_command or [sys.executable, "-m", "jev_gateway.daemon.server"]
-        self.spawn_timeout = spawn_timeout
+        self.spawn_timeout = (
+            spawn_timeout
+            if spawn_timeout is not None
+            else getattr(cfg.daemon, "spawn_timeout_seconds", 1.0)
+        )
         self.default_workspace = default_workspace or str(Path.cwd())
 
     def send_request(self, event: str, payload: Dict[str, Any]) -> Dict[str, Any]:

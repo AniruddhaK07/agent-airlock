@@ -1,7 +1,7 @@
 # Project Progress
 
-## Current Phase: Phase 8 — Docs & release prep
-- **Status**: Phase 7 (Test/eval scenario harness) Complete; Queued for Docs & Release Prep (Phase 8)
+## Current Phase: Phase 8 Complete — Release & Documentation Ready
+- **Status**: Phases 0 through 8 Complete (126 passed tests, 137 subtests, 100% pass rate).
 - **Completed**:
   - Phase 0 (Bootstrap): Baseline documents initialized and verified.
   - Phase 1 (Hard Policy Engine): Implemented deterministic models, anti-evasion normalizer, default rules, engine, and configuration loader (18 tests, 130 subtests, 0 false negatives). Hardened with generalized fork-bomb detection.
@@ -53,7 +53,13 @@
       4. Runaway Fix-Loop (npm install repeating errors across 3 steps) caught by circuit breaker tripping to force_ask.
       5. Offline Daemon Resilience strictly failing closed to human confirmation.
     - Total test suite stands at 120 tests and 137 subtests passing with 100% pass rate.
-- **What's next**: Implement Phase 8 (Documentation, README with architecture diagrams, configuration examples, and release preparation).
+  - Phase 7/8 Hardening (Daemon Startup Diagnosis & Two-Stage Readiness):
+    - Empirically diagnosed daemon failure mode: discovered recycled Windows PID 3428 (`explorer.exe`) causing daemon auto-spawn crashes on startup, combined with ~10.2s synchronous model load exceeding the 200ms hook timeout.
+    - Implemented Windows executable verification in `pid.py` using `QueryFullProcessImageNameW`.
+    - Implemented two-stage readiness: Stage 1 socket & HardPolicyEngine ready in ~360ms; Stage 2 asynchronous Laya loading in background worker thread.
+    - Added cold-spawn regression test `test_cold_spawn_hard_allow_before_laya_ready` in `test_daemon_ipc.py`.
+    - Total test suite: 121 tests passing (100% pass rate). Verified live against real Antigravity CLI with zero confirmation prompts on safe commands.
+- **What's next**: Complete Phase 8 (Documentation, README with architecture diagrams, configuration examples, and release preparation).
 - **Blockers**: None.
 
 ---
@@ -142,18 +148,31 @@
 ## Phase 7 — Test/eval harness
 - **Status**: Done
 - **Completed**:
-  - Authored `tests/test_scenarios.py` implementing 5 realistic operational scenarios:
+  - Authored `tests/test_scenarios.py` implementing multi-turn realistic operational scenarios:
     - `test_scenario_safe_developer_routine`: benign multi-step workflow allowed with zero delay.
     - `test_scenario_dangerous_adversarial_attacks`: root wipe, pipe-to-shell, fork bomb, credential reads hard-denied deterministically.
     - `test_scenario_ambiguous_operations_routed_to_laya`: ML safety airlock rubric routing (high blast auto-deny, moderate risk ask, bounded safe allow).
+    - `test_scenario_ambiguous_operations_live_laya`: live inference scenario test against real fine-tuned Laya checkpoint (guards against weight drift).
     - `test_scenario_runaway_fix_loop_circuit_breaker_tripped`: repeating tool error fix loops caught by circuit breaker tripping to force_ask.
     - `test_scenario_offline_daemon_strictly_fails_closed`: daemon unavailability strictly fails closed to human confirmation.
-  - Project test suite: 120 passed tests, 137 subtests (100% pass rate).
+  - Project test suite: 126 passed tests, 137 subtests (100% pass rate).
 - **What's left**: None (Phase 7 exit criteria met).
 - **Blockers**: None.
 
 ## Phase 8 — Docs & release prep
-- **Status**: Not started
-- **Completed**: None.
-- **What's left**: User README, configuration examples, contribution guidelines.
+- **Status**: Done
+- **Completed**:
+  - Closed Phase 7 verification item: confirmed Scenario 3 used fixture values for deterministic CI; authored `test_scenario_ambiguous_operations_live_laya` exercising the live fine-tuned Laya checkpoint.
+  - Hardened daemon process verification: added cross-platform POSIX PID verification in `pid.py` (Linux `/proc/{pid}/cmdline`, macOS `ps`), tightened recycled-PID signature matching, and upgraded latency logging to `time.perf_counter()` for sub-millisecond precision.
+  - Characterized CPU-only performance: empirically benchmarked CPU loading (10.52s) and inference latency (~1,250ms mean) across 10 iterations; verified zero hard CUDA dependencies in codebase; added explicit `device: Optional[str]` support and independent device agent caching.
+  - Formulated checkpoint distribution strategy: dual-track distribution with pre-trained weights hosted on Hugging Face Hub (`AniruddhaK/jev-airlock-laya`), full training pipeline and starter dataset bundled in repo, and pure deterministic fallback when offline/weights absent.
+  - Authored release documentation deliverables:
+    - `README.md`: comprehensive overview, 4-tier decision cascade diagram, hardware specifications and measured latencies, installation guide, checkpoint distribution model, and safety disclaimer.
+    - `examples/workspace-policy.yaml`: sample project policy demonstrating workspace rules and allow/deny hierarchy.
+    - `examples/global-config.yaml`: sample global daemon configuration with timeouts, circuit breaker, and audit settings.
+    - `CONTRIBUTING.md`: development environment setup, dataset schema, retraining instructions, and strict security review protocol for hard policy rules.
+    - `LICENSE`: Apache License 2.0.
+  - Verified full test suite passes: 126 passed tests, 137 subtests (100% pass rate).
+- **What's left**: None (Phase 8 exit criteria met).
 - **Blockers**: None.
+

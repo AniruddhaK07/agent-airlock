@@ -12,13 +12,97 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def is_process_running(pid: int) -> bool:
+def get_process_cmdline(pid: int) -> Optional[str]:
+    """
+    Retrieves the command line string for a process by PID across platforms.
+    On Windows: uses NtQueryInformationProcess (class 60) with PROCESS_QUERY_LIMITED_INFORMATION.
+    On Linux: reads /proc/{pid}/cmdline.
+    On macOS / BSD: invokes 'ps -p {pid} -o command='.
+    Guaranteed never to access ctypes.windll on non-Windows platforms.
+    """
+    if pid <= 0:
+        return None
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+            class UNICODE_STRING(ctypes.Structure):
+                _fields_ = [
+                    ("Length", wintypes.USHORT),
+                    ("MaximumLength", wintypes.USHORT),
+                    ("Buffer", wintypes.LPWSTR),
+                ]
+
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return None
+            try:
+                ret_len = wintypes.ULONG()
+                # ProcessCommandLineInformation = 60
+                status = ctypes.windll.ntdll.NtQueryInformationProcess(
+                    handle, 60, None, 0, ctypes.byref(ret_len)
+                )
+                if ret_len.value == 0:
+                    return None
+                buf = ctypes.create_string_buffer(ret_len.value)
+                status2 = ctypes.windll.ntdll.NtQueryInformationProcess(
+                    handle, 60, buf, ret_len.value, ctypes.byref(ret_len)
+                )
+                if status2 == 0:
+                    p_unicode = ctypes.cast(buf, ctypes.POINTER(UNICODE_STRING))
+                    raw_chars = buf[ctypes.sizeof(UNICODE_STRING):ctypes.sizeof(UNICODE_STRING) + p_unicode.contents.Length]
+                    return raw_chars.decode("utf-16le", errors="replace")
+                return None
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            return None
+    else:
+        # POSIX (Linux / macOS / BSD)
+        # 1. Linux /proc filesystem
+        proc_cmdline = Path(f"/proc/{pid}/cmdline")
+        if proc_cmdline.exists():
+            try:
+                raw = proc_cmdline.read_bytes()
+                # Arguments in /proc/cmdline are separated by null bytes (\x00)
+                cmd = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+                if cmd:
+                    return cmd
+            except Exception:
+                pass
+
+        # 2. macOS / BSD fallback via ps command
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception:
+            pass
+
+        return None
+
+
+def is_process_running(pid: int, expected_signature: Optional[str] = None) -> bool:
     """
     Cross-platform check whether a process with given PID is currently active.
+    If expected_signature is specified, verifies that the process's command line
+    matches the daemon invocation (e.g. 'jev_gateway.daemon.server' or 'jev-daemon'),
+    preventing recycled-PID false positives when another Python process reuses the PID.
     """
     if pid <= 0:
         return False
 
+    is_alive = False
     if sys.platform == "win32":
         try:
             import ctypes
@@ -33,25 +117,63 @@ def is_process_running(pid: int) -> bool:
                 exit_code = ctypes.c_ulong()
                 if ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                     STILL_ACTIVE = 259
-                    return exit_code.value == STILL_ACTIVE
-                return False
+                    is_alive = (exit_code.value == STILL_ACTIVE)
             finally:
                 ctypes.windll.kernel32.CloseHandle(handle)
         except Exception:
-            # Fallback to os.kill if ctypes fails
             try:
                 os.kill(pid, 0)
-                return True
+                is_alive = True
             except (OSError, SystemError):
                 return False
     else:
         try:
             os.kill(pid, 0)
-            return True
+            is_alive = True
         except (ProcessLookupError, PermissionError):
-            return True
+            is_alive = True
         except OSError:
             return False
+
+    if not is_alive:
+        return False
+
+    # If an expected signature is required, verify process command line
+    if expected_signature:
+        # Same process is always accepted
+        if pid == os.getpid():
+            return True
+
+        cmdline = get_process_cmdline(pid)
+        if cmdline is None:
+            # If command line could not be inspected, verify at least image name is Python on Windows
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                    if handle:
+                        try:
+                            buf = ctypes.create_unicode_buffer(1024)
+                            size = wintypes.DWORD(1024)
+                            if ctypes.windll.kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                                return "python" in Path(buf.value).name.lower()
+                        finally:
+                            ctypes.windll.kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
+            return False
+
+        sig_lower = expected_signature.lower()
+        cmd_lower = cmdline.lower()
+        return (
+            sig_lower in cmd_lower
+            or "jev_gateway.daemon.server" in cmd_lower
+            or "jev-daemon" in cmd_lower
+            or "jev_gateway" in cmd_lower
+        )
+
+    return True
 
 class PIDManager:
     """
@@ -90,17 +212,17 @@ class PIDManager:
     def is_running(self) -> bool:
         """
         Returns True if another instance of the daemon is actively running.
-        If a stale PID file exists, it is cleaned up automatically.
+        If a stale PID file exists (dead or unrelated process), it is cleaned up automatically.
         """
         pid = self.read_pid()
         if pid is None:
             return False
 
-        if is_process_running(pid):
+        if is_process_running(pid, expected_signature="jev_gateway.daemon.server"):
             return True
 
-        # Process is dead; clean up stale files
-        logger.info("Found stale PID file for dead process %d. Cleaning up.", pid)
+        # Process is dead or unrelated; clean up stale files
+        logger.info("Found stale PID file for non-daemon or dead process %d. Cleaning up.", pid)
         self.cleanup()
         return False
 

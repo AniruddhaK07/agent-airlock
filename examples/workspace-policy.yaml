@@ -1,0 +1,37 @@
+# .jev-policy.yaml — Workspace Policy Configuration for Jev Airlock
+# Place this file in the root of your workspace/repository to tailor rules
+# to your project's build system, scripts, and workflows.
+
+version: "1.0"
+
+# Disallow project-level rules from overriding bundled hard-deny rules
+# (Setting this to true requires conscious security approval)
+allow_override_denies: false
+
+# Custom project rules
+rules:
+  # Example 1: Hard-allow harmless project-specific build or lint scripts
+  - rule_id: "allow-project-build"
+    tool_name: "run_command"
+    pattern: '^npm (run (build|lint|test|typecheck)|test)$'
+    action: "allow"
+    description: "Allow standard workspace npm scripts without prompt"
+
+  - rule_id: "allow-python-pytest"
+    tool_name: "run_command"
+    pattern: '^(pytest|python -m pytest)( [a-zA-Z0-9_\-\./]+)*$'
+    action: "allow"
+    description: "Allow project unit tests execution"
+
+  # Example 2: Hard-deny access to local database or private credential files
+  - rule_id: "deny-sqlite-database-tampering"
+    tool_name: "run_command"
+    pattern: 'rm .*(\.sqlite|\.db|\.sqlite3)$'
+    action: "deny"
+    description: "Block deletion of local database files"
+
+  - rule_id: "deny-read-local-service-keys"
+    tool_name: "view_file"
+    pattern: '.*(secrets\.json|service-account\.json)$'
+    action: "deny"
+    description: "Block model inspection of local secrets and service keys"

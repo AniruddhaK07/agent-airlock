@@ -1,0 +1,47 @@
+# global-config.yaml — Global Configuration for Jev Airlock
+# Default location: ~/.gemini/antigravity-cli/config.yaml
+
+version: "1.0"
+
+# Daemon Server & Transport Settings
+daemon:
+  transport: "auto"       # "auto" (AF_UNIX with loopback TCP fallback) | "unix" | "tcp"
+  host: "127.0.0.1"
+  tcp_port: 0             # 0 binds an ephemeral port dynamically
+  socket_path: "~/.gemini/antigravity-cli/.jev-daemon.sock"
+  token_file: "~/.gemini/antigravity-cli/.jev-daemon.token"
+  pid_file: "~/.gemini/antigravity-cli/jev-daemon.pid"
+  request_timeout_seconds: 5.0   # IPC round-trip timeout (keep >= 5.0 for CPU inference)
+  spawn_timeout_seconds: 1.0     # Time hook client waits for daemon auto-spawn
+  log_level: "INFO"
+
+# ML Safety Airlock Configuration
+jev:
+  provider: "auto"        # "auto" (local checkpoint if found, else remote/Stage-1) | "local" | "remote" | "none"
+  checkpoint_path: "checkpoints/laya-finetuned" # Path to local weights or Hugging Face Hub model ID
+  device: null            # null (auto-detect CUDA/MPS/XPU/CPU) | "cuda" | "cpu" | "mps"
+  model: "jev-1.13.0"
+  api_key_env: "TYPESAFE_API_KEY"
+  base_url: "https://api.typesafe.ai/v1"
+  timeout_seconds: 0.400
+  thresholds:
+    allow_confidence: 0.90
+    deny_confidence: 0.85
+    max_safe_blast_radius: 2.0
+    min_safe_reversible_prob: 0.70
+    default: "ask"
+
+# Runaway Fix-Loop Circuit Breaker
+circuit_breaker:
+  enabled: true
+  hash_window: 3          # Track rolling history of last 3 tool execution results
+  similarity_threshold: 0.80
+  noul_confidence: 0.80   # Semantic confirmation threshold via Noul head
+  min_repeat_prob: 0.60
+  break_action: "force_ask" # Invalidate tool confirmation cache and halt loop
+
+# Audit Logging & Compliance
+audit:
+  log_file: "~/.gemini/antigravity-cli/audit.jsonl"
+  flush_immediate: true   # Flush every record immediately to disk
+  retention_days: 30

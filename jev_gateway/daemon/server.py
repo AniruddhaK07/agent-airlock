@@ -50,39 +50,22 @@ class DaemonServer:
         )
 
         self.policy_engine = HardPolicyEngine(self.config.build_effective_rules())
+        self._should_load_model = False
+        self._model_load_task: Optional[asyncio.Task] = None
+
         if router is not None:
             self.router = router
         else:
-            jev_client = None
             provider = getattr(self.config.jev, "provider", "auto").lower()
             checkpoint_path = getattr(self.config.jev, "checkpoint_path", "checkpoints/laya-finetuned")
 
-            # Check if local fine-tuned Laya model can/should be loaded
+            # Check if local fine-tuned Laya model or remote Jev can/should be loaded in background
             should_try_local = provider in ("local", "laya") or (
                 provider == "auto" and os.path.exists(checkpoint_path)
             )
-
-            if should_try_local:
-                try:
-                    from jev_gateway.jev.local_laya import LocalLayaClient
-                    jev_client = LocalLayaClient(checkpoint_path=checkpoint_path)
-                    logger.info("Daemon initialized with in-process LocalLayaClient (%s)", checkpoint_path)
-                except Exception as e:
-                    logger.warning("Could not initialize LocalLayaClient: %s", e)
-
-            # If local client was not loaded and remote provider or API key is available
-            if jev_client is None:
-                api_key = os.getenv(self.config.jev.api_key_env, "")
-                if api_key or provider == "remote":
-                    try:
-                        jev_client = JevClient(
-                            api_key=api_key,
-                            model=self.config.jev.model,
-                            base_url=self.config.jev.base_url,
-                            timeout=self.config.jev.timeout_seconds,
-                        )
-                    except Exception as e:
-                        logger.warning("Failed to initialize JevClient: %s", e)
+            api_key = os.getenv(self.config.jev.api_key_env, "")
+            should_try_remote = bool(api_key or provider == "remote")
+            self._should_load_model = should_try_local or should_try_remote
 
             audit_logger = None
             try:
@@ -98,11 +81,13 @@ class DaemonServer:
             jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds)
             self.router = IPCRouter(
                 policy_engine=self.policy_engine,
-                jev_client=jev_client,
+                jev_client=None,
                 jev_evaluator=jev_evaluator,
                 circuit_breaker_config=self.config.circuit_breaker,
                 audit_logger=audit_logger,
             )
+            if self._should_load_model:
+                self.router.model_loading = True
 
         self.server: Optional[asyncio.Server] = None
         self.active_transport: Optional[str] = None  # "unix" or "tcp"
@@ -146,6 +131,54 @@ class DaemonServer:
             self.active_transport,
             self.pid_manager.read_pid(),
         )
+
+        # Stage 2: Load model asynchronously in background task after socket is listening
+        if self._should_load_model and self.router.jev_client is None:
+            self._model_load_task = asyncio.create_task(self._load_model_background())
+
+    async def _load_model_background(self) -> None:
+        """
+        Loads Laya or remote JevClient in a worker thread after socket is accepting connections.
+        Hard policy engine answers requests immediately while this runs.
+        """
+        provider = getattr(self.config.jev, "provider", "auto").lower()
+        checkpoint_path = getattr(self.config.jev, "checkpoint_path", "checkpoints/laya-finetuned")
+
+        should_try_local = provider in ("local", "laya") or (
+            provider == "auto" and os.path.exists(checkpoint_path)
+        )
+
+        if should_try_local:
+            try:
+                device = getattr(self.config.jev, "device", None)
+                def _load_local():
+                    from jev_gateway.jev.local_laya import LocalLayaClient
+                    return LocalLayaClient(checkpoint_path=checkpoint_path, device=device)
+
+                client = await asyncio.to_thread(_load_local)
+                self.router.set_jev_client(client)
+                logger.info("Daemon background LocalLayaClient loaded and ready.")
+                return
+            except Exception as e:
+                logger.warning("Could not initialize LocalLayaClient in background: %s", e)
+
+        api_key = os.getenv(self.config.jev.api_key_env, "")
+        if api_key or provider == "remote":
+            try:
+                client = JevClient(
+                    api_key=api_key,
+                    model=self.config.jev.model,
+                    base_url=self.config.jev.base_url,
+                    timeout=self.config.jev.timeout_seconds,
+                )
+                self.router.set_jev_client(client)
+                logger.info("Daemon remote JevClient initialized and ready.")
+                return
+            except Exception as e:
+                logger.warning("Failed to initialize JevClient in background: %s", e)
+
+        self.router.model_loading = False
+        self.router.model_ready = False
 
     def _resolve_transport(self) -> str:
         has_unix = hasattr(socket, "AF_UNIX")
@@ -261,6 +294,14 @@ class DaemonServer:
                 await self.server.wait_closed()
             except Exception as e:
                 logger.warning("Error waiting for server closure: %s", e)
+
+        # Cancel background model loading task if still running
+        if self._model_load_task and not self._model_load_task.done():
+            self._model_load_task.cancel()
+            try:
+                await self._model_load_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         # Cancel any active client tasks
         if self._active_tasks:

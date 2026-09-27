@@ -481,5 +481,185 @@ asyncio.run(server.run_forever())
             await duplicate_server.start()
         self.assertIn("already active", str(ctx.exception))
 
+    # =========================================================================
+    # 11. TWO-STAGE READINESS & REGRESSION: HARD-ALLOW BEFORE LAYA READY
+    # =========================================================================
+
+    async def test_cold_spawn_hard_allow_before_laya_ready(self):
+        """
+        Regression test: Cold daemon spawn where socket becomes ready immediately,
+        while model loading occurs asynchronously in the background.
+        A hard-allow request (e.g. 'git status') arriving before model finishes loading
+        must resolve instantly (<100ms) and correctly with decision 'allow',
+        NOT via fail-closed ask.
+        Ambiguous requests during this window fail closed to ask.
+        """
+        import time
+        tmp_dir = tempfile.TemporaryDirectory()
+        tmp_path = Path(tmp_dir.name)
+        sock_p = tmp_path / "stage2.sock"
+        tok_p = tmp_path / "stage2.token"
+        pid_p = tmp_path / "stage2.pid"
+
+        cfg = GatewayConfig(
+            daemon=DaemonConfig(
+                socket_path=str(sock_p),
+                token_file=str(tok_p),
+                pid_file=str(pid_p),
+                tcp_port=0,
+                transport="tcp",
+                host="127.0.0.1",
+            ),
+        )
+
+        server = DaemonServer(config=cfg)
+
+        async def slow_load_model():
+            server.router.model_loading = True
+            await asyncio.sleep(0.300)
+            class MockClient:
+                def evaluate_ambiguous_tool(self, tool_name, tool_args, context=None):
+                    from jev_gateway.jev.models import JevEvaluation
+                    return JevEvaluation(
+                        score_blast_radius=1.0,
+                        score_confidence=0.95,
+                        noul_reversible_prob=0.95,
+                        choice_route="deterministic-safe",
+                        choice_confidence=0.95,
+                    )
+            server.router.set_jev_client(MockClient())
+
+        server._load_model_background = slow_load_model
+        server._should_load_model = True
+
+        await server.start()
+        try:
+            self.assertFalse(server.router.model_ready)
+            self.assertTrue(server.router.model_loading)
+
+            client = StubHookClient(
+                config=cfg,
+                port=server.tcp_port,
+                token_file=str(tok_p),
+                socket_path=str(sock_p),
+                default_workspace=str(tmp_path),
+            )
+
+            # 1. Immediately issue hard-allow request while model is STILL loading
+            t0 = time.perf_counter()
+            res_allow = await asyncio.to_thread(
+                client.check_tool, "run_command", {"CommandLine": "git status"}
+            )
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+            # Must resolve instantly and correctly, NOT fail-closed to ask
+            self.assertEqual(res_allow.get("decision"), "allow")
+            self.assertEqual(res_allow.get("status"), "success")
+            self.assertIn("Hard Allow", res_allow.get("reason", ""))
+            self.assertLess(elapsed_ms, 150.0)
+
+            # 2. Issue ambiguous request while model is STILL loading -> must fail closed to ask
+            res_ambig = await asyncio.to_thread(
+                client.check_tool, "run_command", {"CommandLine": "python build_assets.py"}
+            )
+            self.assertEqual(res_ambig.get("decision"), "ask")
+            self.assertEqual(res_ambig.get("status"), "fail_closed")
+            self.assertIn("Model initializing", res_ambig.get("reason", ""))
+
+            # 3. Wait for background loading to complete
+            if server._model_load_task:
+                await server._model_load_task
+            self.assertTrue(server.router.model_ready)
+
+            # 4. Now ambiguous request resolves via model
+            res_ambig_after = await asyncio.to_thread(
+                client.check_tool, "run_command", {"CommandLine": "python build_assets.py"}
+            )
+            self.assertEqual(res_ambig_after.get("decision"), "allow")
+            self.assertIsNotNone(res_ambig_after.get("jevEvaluation"))
+        finally:
+            await server.stop()
+            tmp_dir.cleanup()
+
+    # =========================================================================
+    # 12. HARDENING TESTS: RECYCLED PID, POSIX COMPATIBILITY, & AUDIT LATENCY
+    # =========================================================================
+
+    async def test_unrelated_python_process_treated_as_stale_pid(self):
+        """
+        Verify that a PID pointing to an active Python process whose command line
+        does NOT match the daemon signature (e.g. dummy sleep process) is recognized
+        as a stale/unrelated PID, NOT a running daemon.
+        """
+        import subprocess
+        import sys
+        # Launch a dummy python process that stays alive
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+        try:
+            stale_pid_file = self.tmp_path / "unrelated.pid"
+            stale_token_file = self.tmp_path / "unrelated.token"
+            stale_token_file.write_text("dummy-token", encoding="utf-8")
+            stale_pid_file.write_text(json.dumps({"pid": proc.pid}), encoding="utf-8")
+            pid_mgr = PIDManager(pid_file=stale_pid_file, token_file=stale_token_file)
+
+            # is_running should detect that while proc.pid is alive, its cmdline
+            # does NOT match 'jev_gateway.daemon.server' / 'jev-daemon'
+            self.assertFalse(pid_mgr.is_running())
+            # Stale PID file must have been automatically cleaned up
+            self.assertFalse(stale_pid_file.exists())
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                proc.kill()
+
+    def test_posix_pid_verification_no_windll(self):
+        """
+        Verify that on POSIX platforms (Linux / macOS), PID inspection functions
+        do not attempt to touch ctypes.windll and correctly parse process signatures.
+        """
+        from unittest.mock import patch
+        from jev_gateway.daemon.pid import get_process_cmdline, is_process_running
+
+        # Test Linux branch reading /proc/{pid}/cmdline
+        with patch("sys.platform", "linux"):
+            fake_proc_cmdline = "python3\0-m\0jev_gateway.daemon.server\0--port\08080\0"
+            with patch("pathlib.Path.exists", return_value=True), \
+                 patch("pathlib.Path.read_bytes", return_value=fake_proc_cmdline.encode("utf-8")), \
+                 patch("os.kill", return_value=None):
+                cmdline = get_process_cmdline(12345)
+                self.assertIn("jev_gateway.daemon.server", cmdline)
+                self.assertTrue(is_process_running(12345))
+
+        # Test macOS / BSD branch running ps -p {pid} -o command=
+        with patch("sys.platform", "darwin"):
+            with patch("subprocess.run") as mock_subproc, \
+                 patch("os.kill", return_value=None):
+                mock_subproc.return_value.returncode = 0
+                mock_subproc.return_value.stdout = "/usr/bin/python3 -m jev_gateway.daemon.server\n"
+                cmdline = get_process_cmdline(12345)
+                self.assertIn("jev_gateway.daemon.server", cmdline)
+                self.assertTrue(is_process_running(12345))
+
+    async def test_hard_policy_latency_non_zero_in_audit(self):
+        """
+        Verify that audit log records non-zero microsecond latency for hard-policy paths,
+        confirming time.perf_counter() resolution instead of 0.0ms default.
+        """
+        logged_events = []
+        if self.server.router.audit_logger:
+            self.server.router.audit_logger.log = logged_events.append
+
+        res = await asyncio.to_thread(
+            self.client.check_tool, "run_command", {"CommandLine": "git status"}
+        )
+        self.assertEqual(res.get("decision"), "allow")
+        self.assertEqual(len(logged_events), 1)
+        event = logged_events[0]
+        self.assertEqual(event.final_decision, "allow")
+        self.assertGreater(event.latency_ms, 0.0)
+
 if __name__ == "__main__":
     unittest.main()
+

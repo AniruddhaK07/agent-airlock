@@ -698,3 +698,5 @@ if __name__ == "__main__":
 | Phase 5 | `test_audit_log.py` | Immutable append-only log format, jsonl validity, event completeness |
 | Phase 6 | `test_hooks.py` | Hook stdin/stdout compliance, sub-50ms execution on safe paths |
 | Phase 7 | `test_scenarios.py` | End-to-end multi-turn evaluation across benign, dangerous, ambiguous, and crashing scenarios |
+| Phase 8 | Full suite (`pytest -v`) | Cross-platform compatibility (POSIX PID), forced CPU fallback benchmark, live Laya inference, release docs & examples |
+

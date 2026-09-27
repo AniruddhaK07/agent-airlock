@@ -131,6 +131,26 @@ class TestLocalLayaIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(dec.decision, GateDecision.ASK)
             self.assertIn("failing closed", dec.reason)
 
+    def test_cpu_forced_inference_and_latency(self):
+        """
+        Forces inference on CPU explicitly (device='cpu') and verifies
+        that inference completes correctly without CUDA dependencies,
+        returning valid JevEvaluation fields.
+        """
+        cpu_client = LocalLayaClient(checkpoint_path=DEFAULT_CHECKPOINT, device="cpu")
+        self.assertEqual(cpu_client.agent.device.type, "cpu")
+
+        t0 = time.perf_counter()
+        ev = cpu_client.evaluate_ambiguous_tool(
+            "run_command", {"CommandLine": "python build_assets.py"}
+        )
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        self.assertIsNotNone(ev)
+        self.assertIn(ev.choice_route, [ChoiceRoute.DETERMINISTIC_SAFE.value, ChoiceRoute.NEEDS_HUMAN.value])
+        self.assertGreater(ev.score_blast_radius, 0.0)
+        self.assertGreater(elapsed_ms, 0.0)
+
     # =========================================================================
     # END-TO-END DAEMON IPC ROUNDTRIP WITH LOCAL LAYA
     # =========================================================================
@@ -161,6 +181,8 @@ class TestLocalLayaIntegration(unittest.IsolatedAsyncioTestCase):
 
         server = DaemonServer(config=cfg)
         await server.start()
+        if server._model_load_task:
+            await server._model_load_task
 
         client = StubHookClient(
             config=cfg,

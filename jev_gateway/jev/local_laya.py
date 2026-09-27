@@ -45,17 +45,16 @@ QUESTIONS = {
     }
 }
 
-_CACHED_AGENT = None
-_CACHED_AGENT_PATH = None
+_CACHED_AGENTS: Dict[Any, Any] = {}
 
 
-def get_laya_agent(checkpoint_path: str):
+def get_laya_agent(checkpoint_path: str, device: Optional[str] = None):
     """
     Returns cached Laya agent or loads it directly via laya.load().
-    Preserves single-instance GPU memory residency.
+    Preserves single-instance memory residency on GPU/CPU.
     """
-    global _CACHED_AGENT, _CACHED_AGENT_PATH
-    if _CACHED_AGENT is None or _CACHED_AGENT_PATH != checkpoint_path:
+    cache_key = (checkpoint_path, device)
+    if cache_key not in _CACHED_AGENTS:
         os.environ["USE_TF"] = "0"
         try:
             import laya
@@ -68,12 +67,11 @@ def get_laya_agent(checkpoint_path: str):
                 f"Ensure Phase 3b training is complete."
             )
 
-        logger.info("Loading fine-tuned Laya checkpoint directly from %s", checkpoint_path)
+        logger.info("Loading fine-tuned Laya checkpoint directly from %s (device=%s)", checkpoint_path, device)
         # CRITICAL INVARIANT: Direct laya.load(), NEVER Router()
-        _CACHED_AGENT = laya.load(checkpoint_path)
-        _CACHED_AGENT_PATH = checkpoint_path
+        _CACHED_AGENTS[cache_key] = laya.load(checkpoint_path, device=device)
 
-    return _CACHED_AGENT
+    return _CACHED_AGENTS[cache_key]
 
 
 class LocalLayaClient:
@@ -82,9 +80,10 @@ class LocalLayaClient:
     Fulfills the same contract as JevClient.evaluate_ambiguous_tool.
     """
 
-    def __init__(self, checkpoint_path: Optional[str] = None):
+    def __init__(self, checkpoint_path: Optional[str] = None, device: Optional[str] = None):
         self.checkpoint_path = os.path.abspath(checkpoint_path or DEFAULT_CHECKPOINT)
-        self.agent = get_laya_agent(self.checkpoint_path)
+        self.device = device
+        self.agent = get_laya_agent(self.checkpoint_path, device=self.device)
 
     def evaluate_ambiguous_tool(
         self,
