@@ -39,32 +39,44 @@ class ErrorSignature:
 def normalize_error(raw_error: str) -> str:
     """
     Strips ephemeral tokens such as ISO timestamps, hex memory pointers,
-    process IDs, ephemeral ports, and file line/column positions.
+    process IDs, ephemeral ports, file line/column positions,
+    attempt/run banners, and PowerShell wrapper noise.
     """
     if not raw_error:
         return ""
 
     text = str(raw_error).strip()
 
-    # 1. Normalize ISO / standard timestamps
+    # 1. Strip attempt banners / run headers (e.g. === Attempt 1 ===, --- Run 1 ---)
+    text = re.sub(r'(?:===|---)\s*(?:Attempt|Run)?\s*[\$\w\d_]*\s*(?:===|---)', '', text, flags=re.IGNORECASE)
+
+    # 2. Strip PowerShell NativeCommandError metadata wrapper blocks
+    text = re.sub(r'At line:\d+ char:\d+.*?\+ FullyQualifiedErrorId\s*:\s*\w+', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'\b\w+\s*:\s*Traceback', 'Traceback', text, flags=re.IGNORECASE)
+
+    # 3. Normalize file paths (e.g. File "...", or C:\...)
+    text = re.sub(r'File\s+\"[^\"]+\"', 'File "<PATH>"', text)
+    text = re.sub(r'[a-zA-Z]:[/\\][^ \t\r\n:\"\'\(\)]+', '<PATH>', text)
+
+    # 4. Normalize ISO / standard timestamps
     text = re.sub(r'\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b', '<TIMESTAMP>', text)
     text = re.sub(r'\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b', '<TIME>', text)
 
-    # 2. Normalize memory addresses (e.g. 0x7fff5fbff820, 0x000001)
+    # 5. Normalize memory addresses (e.g. 0x7fff5fbff820, 0x000001)
     text = re.sub(r'\b0x[0-9a-fA-F]{4,16}\b', '<ADDR>', text)
 
-    # 3. Normalize PIDs (e.g. PID 12345, pid: 4892)
+    # 6. Normalize PIDs (e.g. PID 12345, pid: 4892)
     text = re.sub(r'\b(?:pid|PID|process)\s*[=:]?\s*\d+\b', '<PID>', text)
 
-    # 4. Normalize file line numbers (e.g. line 45, line 45:12, :45:12)
+    # 7. Normalize file line numbers (e.g. line 45, line 45:12, :45:12)
     text = re.sub(r'\b(?:line|Line)\s+\d+(?::\d+)?\b', 'line <LINE>', text)
     text = re.sub(r':\d+:\d+', ':<LINE>:<COL>', text)
     text = re.sub(r':\d+\b', ':<LINE>', text)
 
-    # 5. Normalize ephemeral IP / port combinations
+    # 8. Normalize ephemeral IP / port combinations
     text = re.sub(r'\b\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b', '<IP>:<PORT>', text)
 
-    # 6. Normalize whitespace
+    # 9. Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -72,7 +84,8 @@ def normalize_error(raw_error: str) -> str:
 def normalize_command(raw_cmd: str) -> str:
     """
     Normalizes command string by stripping cosmetic quotes, extra spaces,
-    and standardizing option order where possible.
+    ignoring informational wrapper commands (echo, Write-Output, Write-Host),
+    shell comments, path separators, and error redirection.
     """
     if not raw_cmd:
         return ""
@@ -82,9 +95,38 @@ def normalize_command(raw_cmd: str) -> str:
     if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
         text = text[1:-1].strip()
 
+    # Unwrap PowerShell foreach loops if wrapping a single command
+    m_loop = re.match(
+        r'^\s*\d+\.\.\d+\s*\|\s*ForEach-Object\s*\{\s*(?:Write-Host|Write-Output|echo)[^;}\n]*[;\n]+\s*([^}]+)\s*\}\s*$',
+        text,
+        flags=re.IGNORECASE,
+    )
+    if m_loop:
+        text = m_loop.group(1).strip()
+
+    # Strip comments (# or // or rem)
+    lines = [l for l in text.splitlines() if not l.strip().startswith(('#', '//', 'rem '))]
+    text = ' '.join(lines)
+
+    # Strip prefix informational commands: Write-Output, Write-Host, echo, printf
+    # e.g., Write-Output "=== Attempt 1 ==="; cmd
+    prefix_pat = r'^\s*(?:Write-Output|Write-Host|echo|printf)\s+(?:\"[^\"]*\"|\'[^\']*\'|[^\s;&|]+)\s*(?:[;&\n]|&&)\s*'
+    while re.match(prefix_pat, text, flags=re.IGNORECASE):
+        text = re.sub(prefix_pat, '', text, count=1, flags=re.IGNORECASE)
+
+    # Strip trailing error/stream redirections
+    text = re.sub(r'\s+2>&1\b', '', text)
+    text = re.sub(r'\s+2>\$null\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+2>/dev/null\b', '', text)
+    text = re.sub(r'\s+>\$null\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+>/dev/null\b', '', text)
+
+    # Normalize backslashes in paths
+    text = text.replace('\\', '/')
+
     # Normalize repeated whitespace
     text = re.sub(r'\s+', ' ', text)
-    return text.lower()
+    return text.lower().strip()
 
 
 def hash_string(text: str) -> str:

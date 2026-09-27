@@ -250,6 +250,79 @@ class TestCircuitBreakerLogic(unittest.TestCase):
         self.assertFalse(res_b.is_tripped)
         self.assertEqual(res_b.action, "none")
 
+    def test_repeating_failure_with_differing_prefix_wrappers_trips(self):
+        """
+        Regression test: 4 attempts with differing 'Write-Output === Attempt N ===' prefixes
+        and identical underlying failure. Verifies that normalized command hashes match
+        and the circuit breaker trips on subsequent attempts.
+        """
+        script_path = r"C:\project\bench-airlock\broken_script.py"
+        err_template = (
+            "=== Attempt {n} ===\n"
+            "Traceback (most recent call last):\n"
+            "  File \"{path}\", line 1, in <module>\n"
+            "    import non_existent_module_xyz\n"
+            "ModuleNotFoundError: No module named 'non_existent_module_xyz'"
+        )
+
+        # Attempt 1: check_pre_tool (should NOT trip, history is empty)
+        cmd_1 = f'Write-Output "=== Attempt 1 ==="; python "{script_path}" 2>&1'
+        res_1 = self.breaker.check_pre_tool("run_command", {"CommandLine": cmd_1})
+        self.assertFalse(res_1.is_tripped)
+
+        # Attempt 1 fails: record failure
+        sig_1 = self.breaker.record_failure(
+            "run_command",
+            {"CommandLine": cmd_1},
+            err_template.format(n=1, path=script_path),
+        )
+
+        # Attempt 2: differing prefix, check_pre_tool (should TRIP!)
+        cmd_2 = f'Write-Output "=== Attempt 2 ==="; python "{script_path}" 2>&1'
+        res_2 = self.breaker.check_pre_tool("run_command", {"CommandLine": cmd_2})
+        self.assertTrue(res_2.is_tripped, "Breaker failed to trip on Attempt 2 with differing prefix!")
+        self.assertEqual(res_2.action, "force_ask")
+        self.assertIn("Identical action", res_2.reason)
+
+        sig_2 = self.breaker.record_failure(
+            "run_command",
+            {"CommandLine": cmd_2},
+            err_template.format(n=2, path=script_path),
+        )
+
+        # Attempt 3: differing prefix (should TRIP!)
+        cmd_3 = f'Write-Output "=== Attempt 3 ==="; python "{script_path}" 2>&1'
+        res_3 = self.breaker.check_pre_tool("run_command", {"CommandLine": cmd_3})
+        self.assertTrue(res_3.is_tripped)
+        self.assertEqual(res_3.action, "force_ask")
+
+        sig_3 = self.breaker.record_failure(
+            "run_command",
+            {"CommandLine": cmd_3},
+            err_template.format(n=3, path=script_path),
+        )
+
+        # Attempt 4: differing prefix (should TRIP!)
+        cmd_4 = f'Write-Output "=== Attempt 4 ==="; python "{script_path}" 2>&1'
+        res_4 = self.breaker.check_pre_tool("run_command", {"CommandLine": cmd_4})
+        self.assertTrue(res_4.is_tripped)
+        self.assertEqual(res_4.action, "force_ask")
+
+        sig_4 = self.breaker.record_failure(
+            "run_command",
+            {"CommandLine": cmd_4},
+            err_template.format(n=4, path=script_path),
+        )
+
+        # Assert command hashes and error hashes are identical across all 4 attempts
+        self.assertEqual(sig_1.command_hash, sig_2.command_hash)
+        self.assertEqual(sig_2.command_hash, sig_3.command_hash)
+        self.assertEqual(sig_3.command_hash, sig_4.command_hash)
+
+        self.assertEqual(sig_1.error_hash, sig_2.error_hash)
+        self.assertEqual(sig_2.error_hash, sig_3.error_hash)
+        self.assertEqual(sig_3.error_hash, sig_4.error_hash)
+
 
 class TestCircuitBreakerDaemonIntegration(unittest.IsolatedAsyncioTestCase):
     """

@@ -614,3 +614,28 @@ Context: Following the initial v1 release (`agent-airlock-v1`), targeted hardeni
        - Medium Priority: $k$-cycle loop detection ($k \ge 2$), CLI offline policy dry-run tooling (`agent-airlock test-policy`), symlink canonicalization, calibration drift watchdog.
        - Low Priority: Multi-tool compound policy schemas, streaming audit log compression & HMAC signing.
 Model: Flash
+
+## [Post-v1.1 Hardening] Rename leak dual root cause resolution — 2026-09-28
+Context: During initial benchmark runs following the vendor-neutral rename to "Laya", live audit logs and user-facing prompt reasons continued to output the legacy name "Jev". An investigation was conducted to determine whether this was caused by an un-restarted background daemon, un-renamed string literals in the codebase, or both.
+Decision: Identified and resolved two independent, compounding failure modes:
+  1. Un-renamed String Literals in Codebase: Literal "Jev" strings remained hardcoded in user-facing message/reason templates in `agent_airlock/backends/evaluator.py`, `agent_airlock/daemon/router.py`, and `agent_airlock/policy/engine.py` (e.g. `"Jev routed action..."`, `"Jev evaluation failure..."`, `"Jev detected potential high blast radius..."`). All user-facing strings were systematically updated to "Laya" or backend-neutral terminology, while preserving internal Python class identifiers (`JevClient`, `JevEvaluator`) for API contract stability.
+  2. Stale Daemon Process in Memory: The background daemon process (PID 21172, bound to port 48921) had been running continuously since before the rename commit, serving the pre-rename code and stale strings directly from memory.
+Fix: Terminated stale daemon PID 21172, updated code strings, and restarted the daemon (PID 18140). Verified via live IPC evaluation and `audit.jsonl` records that all user-facing reasons now strictly report "Laya".
+Rejected: Treating the issue purely as a daemon restart problem without fixing the code literals (would leave bugs upon cold restart); renaming internal class identifiers (unnecessary churn that breaks low-level imports).
+Model: Flash
+
+## [Post-v1.1 Security Policy] Deliberate routing of security configuration reads to ambiguous/needs-human — 2026-09-28
+Context: Read-only inspection of security configuration files (`hooks.json`, `*policy.yaml`, `*policy.json`) via shell commands or inspection cmdlets (`Test-Path`, `Get-Content`, `cat`) falls through to the ambiguous tier rather than matching hard-allow rules. We evaluated whether to introduce a hard-allow rule for read-only access to these configuration paths or intentionally retain ambiguous / `needs-human` routing.
+Decision: Deliberately retain ambiguous / `needs-human` routing for read-only inspection of `hooks.json` and policy configuration files. Reading security-sensitive configuration represents potential tamper reconnaissance (an autonomous agent or adversarial prompt injection payload surveying which hooks are registered, which tools are gated, and what thresholds or patterns are configured). Requiring human-in-the-loop confirmation preserves operator visibility over inspection of the safety perimeter, adhering strictly to fail-closed security invariants.
+Rejected: Adding a hard-allow rule for read-only config inspection (would permit untrusted prompt injections or rogue workflows to silently map security controls without human notification).
+Model: Flash
+
+## [Post-v1.1 Hardening] Circuit breaker hash normalization & prefix wrapper stripping — 2026-09-28
+Context: In the initial benchmark run, the circuit breaker failed to trip across 4 sequential broken script executions because each attempt had a distinct `=== Attempt N ===` `Write-Output` prefix wrapper, changing the command and error hashes despite identical underlying failures. This gap was independently flagged by two separate review passes (Claude Opus in the initial analysis and Gemini Flash in this review) as a critical bypass vector for autoregressive retry thrashing.
+Decision: Extended command and error normalization in `agent_airlock/circuit_breaker/hasher.py`:
+  1. Command Normalization: Strips informational logging/wrapper prefixes (`Write-Output`, `Write-Host`, `echo`, `printf`), unwraps PowerShell loop constructs (`1..N | ForEach-Object { ... }`), removes shell error redirections (`2>&1`, `2>$null`), and normalizes file path separators.
+  2. Error Normalization: Strips run/attempt banner headers (`=== Attempt N ===`, `--- Run N ---`), strips PowerShell `NativeCommandError` metadata wrappers, and normalizes file paths.
+  3. Hook Cwd Propagation: Updated `pre_tool_use.py` and `post_tool_use.py` to extract `Cwd` from `toolCall.args` to ensure workspace-isolated circuit breaker instances match the execution directory, and ensured `PostToolUse` captures exit code failures.
+  4. Regression Test: Added `test_repeating_failure_with_differing_prefix_wrappers_trips` to `tests/test_circuit_breaker.py`, validating that 4 attempts with varying `=== Attempt N ===` banners produce identical hashes and trip the breaker immediately on Attempt 2 with `is_tripped=True` and `decision="force_ask"`.
+Rejected: Exact literal string matching without wrapper normalization (easily defeated by trivial print wrappers or loop indices); disabling prefix stripping (fails to catch autoregressive agents varying their echo banners).
+Model: Flash

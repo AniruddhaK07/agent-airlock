@@ -233,3 +233,48 @@ class AuditReader:
             "unique_conversations": len(conversations),
             "unique_workspaces": len(workspaces),
         }
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Agent Airlock Audit Trail Reader")
+    parser.add_argument("--recent", type=int, default=15, help="Number of recent events to display")
+    parser.add_argument("--log-file", type=str, default=None, help="Path to audit.jsonl log file")
+    parser.add_argument("--stats", action="store_true", help="Display summary statistics")
+    parser.add_argument("--verify", action="store_true", help="Verify audit log integrity")
+    args = parser.parse_args()
+
+    reader = AuditReader(log_path=args.log_file) if args.log_file else AuditReader()
+    if args.verify:
+        integrity = reader.verify_integrity()
+        print(json.dumps(integrity, indent=2))
+        return
+
+    if args.stats:
+        stats = reader.get_statistics()
+        print(json.dumps(stats, indent=2))
+        return
+
+    events = reader.read_all(skip_corrupted=True)
+    recent_events = events[-args.recent:] if events else []
+
+    header = f"{'TIMESTAMP':<28} | {'TYPE':<12} | {'DECISION':<10} | {'LATENCY':<8} | {'TARGET / COMMAND'}"
+    print("=" * len(header))
+    print(header)
+    print("=" * len(header))
+
+    for ev in recent_events:
+        ts = ev.timestamp
+        ev_type = ev.event_type
+        dec = ev.final_decision
+        lat = f"{ev.latency_ms:.2f}ms"
+        target = ev.tool_args.get("CommandLine") or ev.tool_args.get("AbsolutePath") or ev.tool_name
+        if len(str(target)) > 60:
+            target = str(target)[:57] + "..."
+        print(f"{ts:<28} | {ev_type:<12} | {dec:<10} | {lat:<8} | {target}")
+    print("=" * len(header))
+
+
+if __name__ == "__main__":
+    main()
+

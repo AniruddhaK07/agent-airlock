@@ -200,7 +200,7 @@ class HardPolicyEngine:
         if is_chained:
             return PolicyResult(
                 verdict=PolicyVerdict.AMBIGUOUS,
-                reason="Command chaining or subshell substitution detected; falls through to Jev.",
+                reason="Command chaining or subshell substitution detected; falls through to Laya.",
                 is_chained=True,
             )
 
@@ -228,11 +228,11 @@ class HardPolicyEngine:
                 )
 
         # -------------------------------------------------------------
-        # STEP 3: Fall Through to Jev (Ambiguous)
+        # STEP 3: Fall Through to Laya (Ambiguous)
         # -------------------------------------------------------------
         return PolicyResult(
             verdict=PolicyVerdict.AMBIGUOUS,
-            reason="Command is not in deterministic allow/deny rules; falls through to Jev evaluation."
+            reason="Command is not in deterministic allow/deny rules; falls through to Laya evaluation."
         )
 
     def _evaluate_view_file(self, tool_args: Dict[str, Any]) -> PolicyResult:
@@ -269,10 +269,10 @@ class HardPolicyEngine:
                         matched_pattern=rule.pattern,
                     )
 
-        # Modifying project files is mutating -> falls through to Jev
+        # Modifying project files is mutating -> falls through to Laya
         return PolicyResult(
             verdict=PolicyVerdict.AMBIGUOUS,
-            reason=f"File mutation via {tool_name} requires blast-radius assessment; falls through to Jev.",
+            reason=f"File mutation via {tool_name} requires blast-radius assessment; falls through to Laya.",
         )
 
     def _evaluate_readonly_inspection(self, tool_name: str, tool_args: Dict[str, Any]) -> PolicyResult:
@@ -310,7 +310,7 @@ class HardPolicyEngine:
 
         return PolicyResult(
             verdict=PolicyVerdict.AMBIGUOUS,
-            reason=f"Tool {tool_name} requires evaluation; falls through to Jev."
+            reason=f"Tool {tool_name} requires evaluation; falls through to Laya."
         )
 
     def _rule_applies_to_tool(self, rule: PolicyRule, tool_name: str) -> bool:

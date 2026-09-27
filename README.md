@@ -219,6 +219,12 @@ Example audit record:
 
 ---
 
+## 📊 Empirical Benchmarks
+
+See [`docs/benchmarks.md`](docs/benchmarks.md) for a controlled three-way empirical comparison evaluating Agent Airlock against standard prompting and auto-accept modes across prompt frequency, decision latencies, and circuit breaker loop interventions.
+
+---
+
 ## 🧪 Testing
 
 The repository includes a comprehensive test harness covering every layer of the airlock:

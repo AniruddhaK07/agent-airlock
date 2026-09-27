@@ -49,7 +49,7 @@ class JevEvaluator:
             err_msg = str(error) if error else "No evaluation provided"
             return JevDecisionResult(
                 decision=GateDecision.ASK,
-                reason=f"Jev evaluation failure ({err_msg}); failing closed to human confirmation.",
+                reason=f"Laya evaluation failure ({err_msg}); failing closed to human confirmation.",
                 evaluation=None,
                 latency_ms=latency_ms,
                 error=err_msg,
@@ -61,7 +61,7 @@ class JevEvaluator:
                 return JevDecisionResult(
                     decision=GateDecision.DENY,
                     reason=(
-                        f"Jev detected high blast radius ({evaluation.score_blast_radius:.1f} >= 4.0) "
+                        f"Laya detected high blast radius ({evaluation.score_blast_radius:.1f} >= 4.0) "
                         f"with confidence {evaluation.score_confidence:.2f}; blocking execution."
                     ),
                     evaluation=evaluation,
@@ -71,7 +71,7 @@ class JevEvaluator:
                 return JevDecisionResult(
                     decision=GateDecision.ASK,
                     reason=(
-                        f"Jev detected potential high blast radius ({evaluation.score_blast_radius:.1f} >= 4.0) "
+                        f"Laya detected potential high blast radius ({evaluation.score_blast_radius:.1f} >= 4.0) "
                         f"with confidence {evaluation.score_confidence:.2f}; requiring human confirmation."
                     ),
                     evaluation=evaluation,
@@ -82,7 +82,7 @@ class JevEvaluator:
         if evaluation.choice_route == ChoiceRoute.NEEDS_HUMAN.value:
             return JevDecisionResult(
                 decision=GateDecision.ASK,
-                reason="Jev routed action to human confirmation (needs-human).",
+                reason="Laya routed action to human confirmation (needs-human).",
                 evaluation=evaluation,
                 latency_ms=latency_ms,
             )
@@ -91,7 +91,7 @@ class JevEvaluator:
         if evaluation.choice_route == ChoiceRoute.NEEDS_REASONING_MODEL.value:
             return JevDecisionResult(
                 decision=GateDecision.ASK,
-                reason="Jev routed action to reasoning model / human review (needs-reasoning-model).",
+                reason="Laya routed action to reasoning model / human review (needs-reasoning-model).",
                 evaluation=evaluation,
                 latency_ms=latency_ms,
             )
@@ -103,7 +103,7 @@ class JevEvaluator:
                 return JevDecisionResult(
                     decision=GateDecision.ASK,
                     reason=(
-                        f"Jev choice confidence ({evaluation.choice_confidence:.2f}) < required threshold "
+                        f"Laya choice confidence ({evaluation.choice_confidence:.2f}) < required threshold "
                         f"({self.thresholds.allow_confidence:.2f}); failing closed to human confirmation."
                     ),
                     evaluation=evaluation,
@@ -115,7 +115,7 @@ class JevEvaluator:
                 return JevDecisionResult(
                     decision=GateDecision.ASK,
                     reason=(
-                        f"Jev blast radius ({evaluation.score_blast_radius:.1f}) exceeds safe maximum "
+                        f"Laya blast radius ({evaluation.score_blast_radius:.1f}) exceeds safe maximum "
                         f"({self.thresholds.max_safe_blast_radius:.1f}); failing closed to human confirmation."
                     ),
                     evaluation=evaluation,
@@ -127,7 +127,7 @@ class JevEvaluator:
                 return JevDecisionResult(
                     decision=GateDecision.ASK,
                     reason=(
-                        f"Jev reversibility probability ({evaluation.noul_reversible_prob:.2f}) < required minimum "
+                        f"Laya reversibility probability ({evaluation.noul_reversible_prob:.2f}) < required minimum "
                         f"({self.thresholds.min_safe_reversible_prob:.2f}); failing closed to human confirmation."
                     ),
                     evaluation=evaluation,
@@ -138,7 +138,7 @@ class JevEvaluator:
             return JevDecisionResult(
                 decision=GateDecision.ALLOW,
                 reason=(
-                    f"Jev verified safe: blast_radius={evaluation.score_blast_radius:.1f}, "
+                    f"Laya verified safe: blast_radius={evaluation.score_blast_radius:.1f}, "
                     f"reversible_prob={evaluation.noul_reversible_prob:.2f}, "
                     f"confidence={evaluation.choice_confidence:.2f}."
                 ),

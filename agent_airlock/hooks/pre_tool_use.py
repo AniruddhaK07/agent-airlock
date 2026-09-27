@@ -1,11 +1,7 @@
 """
 Antigravity CLI PreToolUse Lifecycle Hook.
-Reads tool call payload from stdin, queries the running Jev Airlock daemon,
-and writes the gating decision JSON to stdout. Strictly fails closed to 'ask'.
 """
-
-import sys
-import json
+import sys, json
 from pathlib import Path
 
 _root = str(Path(__file__).resolve().parents[2])
@@ -22,6 +18,9 @@ def main():
             return
 
         payload = json.loads(raw_in)
+        cwd = payload.get("toolCall", {}).get("args", {}).get("Cwd")
+        if cwd and not payload.get("workspace_root"):
+            payload["workspace_root"] = cwd
         client = StubHookClient()
         res = client.send_request("PreToolUse", payload)
         out = {"decision": res.get("decision", "ask")}

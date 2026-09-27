@@ -404,6 +404,9 @@ class HardPolicyEngine:
         ...
 ```
 
+##### Anti-Reconnaissance Policy Invariant
+Read-only inspection of security configuration and policy files (`hooks.json`, `*policy.yaml`, `*policy.json`) via shell commands or inspection cmdlets (`Test-Path`, `Get-Content`, `cat`) deliberately falls through to `AMBIGUOUS` (`needs-human`) rather than matching hard-allow rules. Reading security-sensitive configuration represents potential perimeter reconnaissance by autonomous agents or prompt injection payloads attempting to map gated commands, active hooks, and risk thresholds. Requiring human-in-the-loop confirmation preserves operator visibility over inspection of the safety boundary.
+
 ### 6.2. Jev Integration Layer (`agent_airlock.backends`)
 
 #### Data Models (`agent_airlock/backends/models.py`)
@@ -572,6 +575,12 @@ class CircuitBreaker:
         """
         ...
 ```
+
+#### Signature Normalization (`agent_airlock/circuit_breaker/hasher.py`)
+To prevent autoregressive agents from evading hash matching via superficial prefix or wrapper variations, Tier-1 pre-filtering applies deterministic normalization before computing SHA-256 signatures:
+- **Command Normalization**: Unwraps PowerShell loop constructs (`1..N | ForEach-Object { ... }`), strips informational logging/echo prefixes (`Write-Output`, `Write-Host`, `echo`, `printf`), strips error redirections (`2>&1`, `2>$null`), collapses multiple whitespace characters, and normalizes file path separators (`/` vs `\`).
+- **Error Normalization**: Strips run/attempt banner headers (`=== Attempt N ===`, `--- Run N ---`), strips PowerShell `NativeCommandError` metadata wrappers, removes memory addresses and dynamic line indices, and normalizes file path slashes.
+- **Result**: Sequential commands that perform identical operations with varying attempt wrappers or echo prefixes produce identical normalized command and error hashes, ensuring the circuit breaker trips reliably on repeating failure loops.
 
 
 ### 6.4. Audit Logging (`agent_airlock.audit`)

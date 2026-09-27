@@ -35,3 +35,7 @@ checkpoints/
 .agents/
 
 
+
+# Benchmark scratch directories
+bench-*/
+benchmark-sandbox/

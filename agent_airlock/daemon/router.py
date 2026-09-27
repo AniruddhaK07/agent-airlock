@@ -372,7 +372,7 @@ class IPCRouter:
                         "version": version,
                         "status": "fail_closed",
                         "decision": dec_val,
-                        "reason": f"Jev evaluation failure ({e}); failing closed to human confirmation.",
+                        "reason": f"Laya evaluation failure ({e}); failing closed to human confirmation.",
                         "ruleId": None,
                         "permissionOverrides": [],
                         "overwrite": None,
@@ -433,6 +433,8 @@ class IPCRouter:
             error_msg = payload.get("error") or "Execution failed with status error"
         elif isinstance(tool_result, dict):
             exit_code = tool_result.get("exitCode")
+            if exit_code is None:
+                exit_code = tool_result.get("exit_code")
             if exit_code not in (0, None):
                 error_msg = (
                     tool_result.get("stderr")

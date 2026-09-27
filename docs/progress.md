@@ -175,4 +175,17 @@
   - Verified full test suite passes: 126 passed tests, 137 subtests (100% pass rate).
 - **What's left**: None (Phase 8 exit criteria met).
 - **Blockers**: None.
-
+## Phase 9 & Post-v1.1 Hardening — Rename leak resolution, circuit breaker normalization, and verified three-way benchmark
+- **Status**: Done
+- **Completed**:
+  - Implemented Tier-0 anti-tamper runtime protection, PowerShell encoded-command / subshell recursive unwrapping, and POSIX 0600 socket lockdown (v1.1).
+  - Resolved dual-root-cause rename leak: updated all remaining user-facing message/reason literals across evaluator, router, and engine to "Laya", terminated stale daemon PID 21172, and restarted daemon (PID 18140). Verified via live IPC evaluation and audit records.
+  - Formulated and documented security policy decision deliberately retaining ambiguous / `needs-human` routing for read-only inspection of security configuration files (`hooks.json`, `*policy.*`) to prevent silent perimeter reconnaissance by untrusted prompt payloads.
+  - Fixed circuit breaker hash normalization gap in `hasher.py`: added wrapper and banner stripping for loop commands, informational echo prefixes (`Write-Output`), and PowerShell error banners (`=== Attempt N ===`). Added regression test `test_repeating_failure_with_differing_prefix_wrappers_trips` to `tests/test_circuit_breaker.py`.
+  - Propagated execution directory (`Cwd`) to workspace state in `pre_tool_use.py` and `post_tool_use.py`, while maintaining strict `< 50 lines` hook script constraints.
+  - Executed clean three-way benchmark rerun across `bench-default`, `bench-autoaccept`, and `bench-airlock`, empirically verifying 100% prompt precision (0 prompts on safe actions vs 3 on risky actions in Airlock) and circuit breaker intervention on Attempt 2 (1.6 ms latency) in Step 5.
+  - Documented benchmark results in `docs/benchmarks.md` with empirical caveats, and linked from `README.md`.
+  - Logged all architectural decisions in `docs/decisions.md`.
+  - Verified full test suite passes: 98 core tests, 217 subtests (100% pass rate).
+- **What's left**: None (Phase 9 & v1.2 session closeout complete).
+- **Blockers**: None.
