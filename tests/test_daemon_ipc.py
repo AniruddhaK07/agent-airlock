@@ -519,7 +519,7 @@ asyncio.run(server.run_forever())
             await asyncio.sleep(0.300)
             class MockClient:
                 def evaluate_ambiguous_tool(self, tool_name, tool_args, context=None):
-                    from agent_airlock.jev.models import JevEvaluation
+                    from agent_airlock.backends.models import JevEvaluation
                     return JevEvaluation(
                         score_blast_radius=1.0,
                         score_confidence=0.95,

@@ -28,10 +28,10 @@ from agent_airlock.config import (
 )
 from agent_airlock.daemon.server import DaemonServer
 from agent_airlock.hooks.stub_client import StubHookClient
-from agent_airlock.jev.models import GateDecision, ChoiceRoute, JevEvaluation
-from agent_airlock.jev.evaluator import JevEvaluator
-from agent_airlock.jev.local_laya import LocalLayaClient, DEFAULT_CHECKPOINT
-from agent_airlock.jev.client import JevClientError
+from agent_airlock.backends.models import GateDecision, ChoiceRoute, JevEvaluation
+from agent_airlock.backends.evaluator import JevEvaluator
+from agent_airlock.backends.laya import LocalLayaClient, DEFAULT_CHECKPOINT
+from agent_airlock.backends.jev import JevClientError
 
 
 @pytest.mark.skipif(not LAYA_AVAILABLE, reason="laya package not installed in environment")

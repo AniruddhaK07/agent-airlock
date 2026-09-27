@@ -18,8 +18,8 @@ from agent_airlock.config import GatewayConfig, load_config
 from agent_airlock.policy.engine import HardPolicyEngine
 from agent_airlock.daemon.router import IPCRouter
 from agent_airlock.daemon.pid import PIDManager
-from agent_airlock.jev.client import JevClient
-from agent_airlock.jev.evaluator import JevEvaluator
+from agent_airlock.backends.jev import JevClient
+from agent_airlock.backends.evaluator import JevEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ class DaemonServer:
             try:
                 device = getattr(self.config.jev, "device", None)
                 def _load_local():
-                    from agent_airlock.jev.local_laya import LocalLayaClient
+                    from agent_airlock.backends.laya import LocalLayaClient
                     return LocalLayaClient(checkpoint_path=checkpoint_path, device=device)
 
                 client = await asyncio.to_thread(_load_local)

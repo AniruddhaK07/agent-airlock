@@ -5,7 +5,7 @@ Applies configured confidence, blast-radius, and reversibility thresholds.
 
 from typing import Optional
 from agent_airlock.config import JevThresholdsConfig
-from agent_airlock.jev.models import (
+from agent_airlock.backends.models import (
     GateDecision,
     ChoiceRoute,
     JevEvaluation,

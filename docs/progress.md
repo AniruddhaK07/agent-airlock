@@ -17,7 +17,7 @@
     - Exported verified fine-tuned model package to `checkpoints/laya-finetuned/`.
     - Completed Phase 3b close-out verification: audited 15-command benchmark overlap with `train.json` (60.0% exact, 33.3% near, 6.7% novel; documented caveat in `decisions.md`); verified `kill -9 1234` root cause (label divergence in `train.json`) and confirmed **0 / 40 errors** with confidence $\ge 0.90$ and **0 / 40 false-allows** $\ge 0.90$ on the held-out validation set.
   - Phase 3c (Daemon & Local Model Integration & Grounding):
-    - Implemented `LocalLayaClient` in `agent_airlock/jev/local_laya.py` loading `checkpoints/laya-finetuned` directly via `laya.load()` (never `Router()`).
+    - Implemented `LocalLayaClient` in `agent_airlock/backends/laya.py` loading `checkpoints/laya-finetuned` directly via `laya.load()` (never `Router()`).
     - Implemented singleton model memory residency to eliminate repeated weight reloads and prevent CUDA VRAM fragmentation.
     - Audited 200-command training corpus consistency across 21 families; documented semantic label boundaries in `decisions.md`.
     - Measured empirical GPU latency with explicit `torch.cuda.synchronize()`: p50 = 38.14 ms, p95 = 47.16 ms, mean = 39.78 ms; refuted "sub-millisecond" claim and grounded `spec.md`.
@@ -100,10 +100,10 @@
 ## Phase 3 — Jev integration layer
 - **Status**: Done
 - **Completed**:
-  - Implemented `agent_airlock/jev/models.py` with typed dataclasses (`GateDecision`, `ChoiceRoute`, `JevEvaluation`, `JevDecisionResult`).
-  - Implemented `agent_airlock/jev/prompts.py` defining calibrated rubrics for Score (blast radius 1.0–5.0), Noul (reversibility probability 0.0–1.0), Choice (routing: deterministic-safe, needs-human, needs-reasoning-model), and unified prompt formatter.
-  - Implemented `agent_airlock/jev/client.py` with strict model identity pinning (`jev-1.13.0`), silent upgrade prevention, retries on transient network errors, timeout handling, and support for both nested and flat API response schemas.
-  - Implemented `agent_airlock/jev/evaluator.py` enforcing strict safety and confidence thresholds (`allow_confidence`, `deny_confidence`, `max_safe_blast_radius`, `min_safe_reversible_prob`), high blast-radius auto-denials, and fail-closed handling to `ask` on any error or timeout.
+  - Implemented `agent_airlock/backends/models.py` with typed dataclasses (`GateDecision`, `ChoiceRoute`, `JevEvaluation`, `JevDecisionResult`).
+  - Implemented `agent_airlock/backends/prompts.py` defining calibrated rubrics for Score (blast radius 1.0–5.0), Noul (reversibility probability 0.0–1.0), Choice (routing: deterministic-safe, needs-human, needs-reasoning-model), and unified prompt formatter.
+  - Implemented `agent_airlock/backends/jev.py` with strict model identity pinning (`jev-1.13.0`), silent upgrade prevention, retries on transient network errors, timeout handling, and support for both nested and flat API response schemas.
+  - Implemented `agent_airlock/backends/evaluator.py` enforcing strict safety and confidence thresholds (`allow_confidence`, `deny_confidence`, `max_safe_blast_radius`, `min_safe_reversible_prob`), high blast-radius auto-denials, and fail-closed handling to `ask` on any error or timeout.
   - Updated `agent_airlock/daemon/router.py` and `server.py` to seamlessly route ambiguous tool executions from `HardPolicyEngine` into the Jev evaluation layer, preserving workspace isolation and failing closed on API errors.
   - Implemented wall-clock total deadline budget (400ms) across all retries in `JevClient`, avoiding latency stacking.
   - Authored comprehensive test suite `tests/test_jev_integration.py` (26 tests) verifying model pinning, prompt formatting, schema parsing, out-of-bounds rejection, retries/timeouts, 400ms wall-clock total latency budget, threshold decisions, HTTP error simulation, and router integration. 100% pass rate (64 tests, 130 subtests across project).

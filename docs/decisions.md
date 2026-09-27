@@ -580,3 +580,18 @@ Decisions:
        - Ambiguous operations routed to Layer 3 ML evaluation pause for 1.0 – 1.5 seconds (empirically measured: 1,250 ms mean, 1,462 ms peak) on CPU-only hosts.
 Model: Flash
 
+## [Phase 8 Cleanup] Backend Subpackage Restructuring & Script Alias Pruning — 2026-09-27
+Context: Following the initial gent-airlock renaming sweep, two scope corrections were identified to complete the vendor decoupling and clean up public developer interfaces prior to release:
+  1. Renaming gent_airlock/jev/ to gent_airlock/backends/:
+     - Reasoning: A top-level directory named jev/ is the first thing a developer browsing the repository sees, immediately reintroducing the vendor-confusion pattern the rename sought to eliminate.
+     - Architecture: Renamed the subpackage directory gent_airlock/jev/ -> gent_airlock/backends/, clearly separating individual backend implementations into distinct modules:
+       - ackends/laya.py: The active default local inference client utilizing the fine-tuned ModernBERT checkpoint.
+       - ackends/jev.py: The dormant remote-API client for optional Typesafe Jev cloud evaluation.
+       - ackends/evaluator.py: The multi-head threshold evaluator.
+       - ackends/models.py: Data models (JevEvaluation, ChoiceRoute, GateDecision).
+     - Stability: Preserved internal class names (JevClient, JevEvaluator, JevConfig) for contract stability, focusing renaming strictly on directory path visibility.
+     - Preserved low-visibility fallback configuration candidate .jev-policy.yaml.
+  2. Pruning Speculative CLI Script Aliases in pyproject.toml:
+     - Reasoning: Removing jev-daemon and jev-hooks script aliases. Because this project has not yet shipped publicly, no existing external users or workflows depend on legacy entrypoints. Retaining two differently-named CLI commands for the same tool introduces user confusion without providing any real-world backward compatibility benefit.
+     - Action: Retained strictly canonical commands: gent-airlock-daemon and gent-airlock-hooks.
+Model: Flash

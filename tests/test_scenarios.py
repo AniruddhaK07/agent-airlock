@@ -20,7 +20,7 @@ from agent_airlock.config import GatewayConfig, DaemonConfig, CircuitBreakerConf
 from agent_airlock.daemon.server import DaemonServer
 from agent_airlock.hooks.stub_client import StubHookClient
 from agent_airlock.audit.reader import AuditReader
-from agent_airlock.jev.models import JevEvaluation, ChoiceRoute
+from agent_airlock.backends.models import JevEvaluation, ChoiceRoute
 from agent_airlock.circuit_breaker.breaker import CircuitBreaker
 
 class ScenarioMockLocalLaya:
@@ -95,7 +95,7 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
         from agent_airlock.policy.engine import HardPolicyEngine
         from agent_airlock.daemon.router import IPCRouter
         from agent_airlock.audit.logger import AuditLogger
-        from agent_airlock.jev.evaluator import JevEvaluator
+        from agent_airlock.backends.evaluator import JevEvaluator
 
         self.audit_logger = AuditLogger(
             log_path=str(self.audit_log),
@@ -386,7 +386,7 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
         except ImportError:
             self.skipTest("laya package not installed in environment")
 
-        from agent_airlock.jev.local_laya import DEFAULT_CHECKPOINT, LocalLayaClient
+        from agent_airlock.backends.laya import DEFAULT_CHECKPOINT, LocalLayaClient
         if not Path(DEFAULT_CHECKPOINT).exists():
             self.skipTest(f"Live Laya checkpoint not found at {DEFAULT_CHECKPOINT}")
 

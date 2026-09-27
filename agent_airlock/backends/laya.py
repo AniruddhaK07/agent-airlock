@@ -9,8 +9,8 @@ import os
 import time
 import logging
 
-from agent_airlock.jev.models import JevEvaluation, ChoiceRoute
-from agent_airlock.jev.client import JevClientError
+from agent_airlock.backends.models import JevEvaluation, ChoiceRoute
+from agent_airlock.backends.jev import JevClientError
 
 logger = logging.getLogger(__name__)
 

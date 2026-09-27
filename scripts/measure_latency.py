@@ -16,7 +16,7 @@ repo_root = str(Path(__file__).parent.parent.resolve())
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from agent_airlock.jev.local_laya import LocalLayaClient, QUESTIONS
+from agent_airlock.backends.laya import LocalLayaClient, QUESTIONS
 
 def benchmark_inference(num_iterations=100):
     print("=" * 70)

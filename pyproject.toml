@@ -12,8 +12,6 @@ requires-python = ">=3.10"
 [project.scripts]
 agent-airlock-daemon = "agent_airlock.daemon.server:main"
 agent-airlock-hooks = "agent_airlock.hooks.installer:main"
-jev-daemon = "agent_airlock.daemon.server:main"
-jev-hooks = "agent_airlock.hooks.installer:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

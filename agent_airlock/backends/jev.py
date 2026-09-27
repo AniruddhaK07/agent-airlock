@@ -13,8 +13,8 @@ import urllib.request
 import urllib.error
 import logging
 
-from agent_airlock.jev.models import JevEvaluation, ChoiceRoute
-from agent_airlock.jev.prompts import format_jev_evaluation_prompt
+from agent_airlock.backends.models import JevEvaluation, ChoiceRoute
+from agent_airlock.backends.prompts import format_jev_evaluation_prompt
 
 logger = logging.getLogger(__name__)
 

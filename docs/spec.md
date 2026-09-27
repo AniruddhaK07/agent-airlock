@@ -404,9 +404,9 @@ class HardPolicyEngine:
         ...
 ```
 
-### 6.2. Jev Integration Layer (`agent_airlock.jev`)
+### 6.2. Jev Integration Layer (`agent_airlock.backends`)
 
-#### Data Models (`agent_airlock/jev/models.py`)
+#### Data Models (`agent_airlock/backends/models.py`)
 ```python
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
@@ -421,7 +421,7 @@ class JevEvaluation:
     raw_payload: Dict[str, Any]     # Raw API response for audit logging
 ```
 
-#### Client Interface (`agent_airlock/jev/client.py`)
+#### Client Interface (`agent_airlock/backends/jev.py`)
 ```python
 class JevClient:
     def __init__(self, api_key: Optional[str] = None, model: str = "jev-1.13.0", base_url: str = "https://api.typesafe.ai/v1", timeout: float = 0.400):
@@ -441,7 +441,7 @@ class JevClient:
         ...
 ```
 
-#### Local In-Process Laya Client (`agent_airlock/jev/local_laya.py`)
+#### Local In-Process Laya Client (`agent_airlock/backends/laya.py`)
 ```python
 class LocalLayaClient:
     def __init__(self, checkpoint_path: Optional[str] = None):
@@ -465,7 +465,7 @@ class LocalLayaClient:
         ...
 ```
 
-#### Decision Logic (`agent_airlock/jev/evaluator.py`)
+#### Decision Logic (`agent_airlock/backends/evaluator.py`)
 ```python
 class JevEvaluator:
     def __init__(self, thresholds: JevThresholds):
