@@ -11,6 +11,9 @@ Autonomous AI coding assistants (such as Google Antigravity) are powerful becaus
 
 **Agent Airlock** is a local, high-performance security airlock that intercepts tool execution calls before they reach your system. It combines deterministic pattern matching with a calibrated, fine-tuned transformer classifier to provide **zero-friction speed for safe commands** and **uncompromising protection against dangerous or ambiguous operations**.
 
+
+https://github.com/user-attachments/assets/caef7dc0-5f42-41be-b807-74d743fc6eba
+
 ---
 
 ## 🏗️ Layered Architecture
