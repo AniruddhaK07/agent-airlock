@@ -13,6 +13,7 @@ venv/
 .venv/
 env/
 ENV/
+private/
 
 # Daemon runtime artifacts and credentials
 *.sock
