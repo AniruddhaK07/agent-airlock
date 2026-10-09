@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def _can_load_local_laya(provider: str, checkpoint_path: str) -> bool:
     """Checks whether local Laya model (disk checkpoint or HF Hub model ID) should be attempted."""
-    if provider in ("local", "laya"):
+    if provider in ("local", "laya", "fake", "mock"):
         return True
     if provider == "auto":
         if checkpoint_path and os.path.exists(checkpoint_path):
@@ -158,6 +158,12 @@ class DaemonServer:
         checkpoint_path = getattr(self.config.jev, "checkpoint_path", "ruddh/agent-airlock-laya")
 
         should_try_local = _can_load_local_laya(provider, checkpoint_path)
+
+        if provider in ("fake", "mock"):
+            from agent_airlock.backends.laya import FakeLayaClient
+            self.router.set_jev_client(FakeLayaClient())
+            logger.info("Daemon background FakeLayaClient loaded and ready.")
+            return
 
         if should_try_local:
             try:

@@ -16,3 +16,8 @@ agent-airlock-hooks = "agent_airlock.hooks.installer:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agent_airlock*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "ml: tests requiring real local ML model checkpoint",
+]

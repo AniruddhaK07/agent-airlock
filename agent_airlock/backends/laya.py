@@ -170,3 +170,67 @@ class LocalLayaClient:
         except Exception as e:
             logger.error("Local Laya prediction failed: %s", e)
             raise JevClientError(f"Local Laya inference failed: {e}") from e
+
+
+class FakeLayaClient:
+    """
+    Lightweight in-memory fake Laya client for testing without loading model weights.
+    Avoids multi-second background thread initialization and blocks during teardown.
+    """
+
+    def __init__(
+        self,
+        checkpoint_path: Optional[str] = None,
+        device: Optional[str] = None,
+        route: str = ChoiceRoute.NEEDS_HUMAN.value,
+        blast: float = 3.5,
+        rev: float = 0.1,
+        conf: float = 0.88,
+        noul_prob: float = 0.85,
+        noul_conf: float = 0.90,
+        **kwargs,
+    ):
+        self.checkpoint_path = checkpoint_path
+        self.device = device
+        self.route = route
+        self.blast = blast
+        self.rev = rev
+        self.conf = conf
+        self.noul_prob = noul_prob
+        self.noul_conf = noul_conf
+        self.agent = None
+
+    def evaluate_ambiguous_tool(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> JevEvaluation:
+        return JevEvaluation(
+            score_blast_radius=self.blast,
+            score_confidence=self.conf,
+            noul_reversible_prob=self.rev,
+            choice_route=self.route,
+            choice_confidence=self.conf,
+            raw_payload={"mock": True},
+        )
+
+    def evaluate_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        workspace_context: str = "",
+    ) -> JevEvaluation:
+        return self.evaluate_ambiguous_tool(tool_name, tool_args, {"workspace_root": workspace_context})
+
+    def evaluate_repetition(
+        self,
+        previous_commands: Any,
+        current_command: str,
+    ) -> Dict[str, float]:
+        return {
+            "is_repeat_prob": self.noul_prob,
+            "confidence": self.noul_conf,
+            "latency_ms": 0.5,
+        }
+

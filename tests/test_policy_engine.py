@@ -5,9 +5,11 @@ evasion mitigations, and ambiguous fall-through to Jev.
 """
 
 import unittest
+import tempfile
+from pathlib import Path
 from agent_airlock.policy.models import PolicyVerdict
 from agent_airlock.policy.engine import HardPolicyEngine
-from agent_airlock.config import GatewayConfig
+from agent_airlock.config import GatewayConfig, AuditConfig
 
 class TestHardPolicyEngine(unittest.TestCase):
     def setUp(self):
@@ -392,7 +394,8 @@ class TestHardPolicyEngine(unittest.TestCase):
     # =========================================================================
 
     def test_config_rules_integration(self):
-        cfg = GatewayConfig()
+        tmp_log = Path(tempfile.gettempdir()) / "test-audit.jsonl"
+        cfg = GatewayConfig(audit=AuditConfig(log_file=str(tmp_log)))
         rules = cfg.build_effective_rules()
         self.assertGreater(len(rules), 5)
         engine = HardPolicyEngine(rules)

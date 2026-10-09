@@ -19,6 +19,7 @@ from agent_airlock.config import (
     DaemonConfig,
     CircuitBreakerConfig,
     JevConfig,
+    AuditConfig,
 )
 from agent_airlock.circuit_breaker.hasher import (
     normalize_error,
@@ -334,6 +335,7 @@ class TestCircuitBreakerDaemonIntegration(unittest.IsolatedAsyncioTestCase):
         self.tmp_path = Path(self.tmp_dir.name)
         self.token_file = self.tmp_path / ".daemon_test.token"
         self.pid_file = self.tmp_path / "daemon_test.pid"
+        self.audit_file = self.tmp_path / "test-audit.jsonl"
 
         self.cfg = GatewayConfig(
             daemon=DaemonConfig(
@@ -350,6 +352,9 @@ class TestCircuitBreakerDaemonIntegration(unittest.IsolatedAsyncioTestCase):
                 break_action="force_ask",
             ),
             jev=JevConfig(provider="none"),
+            audit=AuditConfig(
+                log_file=str(self.audit_file),
+            ),
         )
 
         self.server = DaemonServer(config=self.cfg)

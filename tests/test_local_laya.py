@@ -25,6 +25,7 @@ from agent_airlock.config import (
     DaemonConfig,
     JevConfig,
     JevThresholdsConfig,
+    AuditConfig,
 )
 from agent_airlock.daemon.server import DaemonServer
 from agent_airlock.hooks.stub_client import StubHookClient
@@ -34,6 +35,7 @@ from agent_airlock.backends.laya import LocalLayaClient, DEFAULT_CHECKPOINT
 from agent_airlock.backends.jev import JevClientError
 
 
+@pytest.mark.ml
 @pytest.mark.skipif(not LAYA_AVAILABLE, reason="laya package not installed in environment")
 class TestLocalLayaIntegration(unittest.IsolatedAsyncioTestCase):
     """
@@ -164,6 +166,7 @@ class TestLocalLayaIntegration(unittest.IsolatedAsyncioTestCase):
         tmp_path = Path(tmp_dir.name)
         token_file = tmp_path / ".daemon_test.token"
         pid_file = tmp_path / "daemon_test.pid"
+        audit_file = tmp_path / "test-audit.jsonl"
 
         cfg = GatewayConfig(
             daemon=DaemonConfig(
@@ -176,7 +179,10 @@ class TestLocalLayaIntegration(unittest.IsolatedAsyncioTestCase):
             jev=JevConfig(
                 provider="local",
                 checkpoint_path=DEFAULT_CHECKPOINT,
-            )
+            ),
+            audit=AuditConfig(
+                log_file=str(audit_file),
+            ),
         )
 
         server = DaemonServer(config=cfg)
