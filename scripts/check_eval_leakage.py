@@ -34,6 +34,14 @@ def normalize_command(cmd: str) -> str:
 def load_dataset(path: Path) -> List[Dict]:
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
+    if path.suffix == ".jsonl":
+        records = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        return records
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict) and "benchmark_15" in data:

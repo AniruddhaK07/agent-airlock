@@ -1,24 +1,26 @@
 # Progress — Agent Airlock v2
 
 ## Current State (overwrite every session)
-- Date/session: 2026-10-09 session 2
-- Branch / last commit SHA: `v2-semantic` / `788e516`
-- Active phase / task: Phase 0 Verification & Gate G0 Preparation
-- Gate status: G0 [ ] G1 [ ] G2 [ ] G3 [ ]
-- Test status (command + last result line): `conda run -n airlock-v2 pytest -rs` → `136 passed, 1 skipped, 217 subtests passed in 27.68s` (Zero delta on live audit log)
+- Date/session: 2026-10-09 session 3
+- Branch / last commit SHA: `v2-semantic` / `788e516` (working changes staged for G0 commit)
+- Active phase / task: Gate G0 Complete — Paused for Ani's Review & Sign-Off
+- Gate status: G0 [READY FOR REVIEW] G1 [ ] G2 [ ] G3 [ ]
+- Test status (command + last result line): `conda run -n airlock-v2 pytest -rs` → `143 passed, 1 skipped, 217 subtests passed in 27.8s` (Zero delta on live audit log)
 - Environment: Windows 11 Home Single Language (10.0.26300), Python 3.11.16 (conda env `airlock-v2`), AMD Ryzen 7 7445HS (6C/12T), NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM, CUDA available), 16GB RAM (~15.26 GiB visible)
 
 ## Phase Checklist
 - [x] Phase 0A: Orientation & Documentation Setup
 - [x] Phase 0.0: Test isolation & hermetic harness (commit `788e516`: autouse audit fixture, fake client for non-ML, `ml` mark, zero-byte live audit log delta)
 - [x] Phase 0.1: Dataset hygiene, canonical train.json/val.json, leakage checker (`scripts/check_eval_leakage.py`), validator (`scripts/validate_dataset.py`)
-- [x] Audit Corpus Hygiene: Excluded 316 test-generated records from `private/audit.jsonl`; 15,267 clean production records across 66 conversations
-- [x] Verification 1: Audit schema & human approvals vs ML auto-allows discriminability (4,012 human approvals vs 31 ML auto-allows)
-- [ ] Verification 2: Deny-reason visibility (safe test design proposed; waiting for Ani's approval before running)
-- [x] Verification 3: ONNX export feasibility diagnosed (PyTorch tracer succeeds on all heads; blocked only by missing `onnx` package)
-- [ ] Phase 0.2: Trace replay (`data/traces/`, scrubber, simulated approver)
-- [ ] Phase 0.3: Metrics & eval harness
-- [ ] Phase 0.4: Baseline against v1 (Gate G0)
+- [x] Audit Corpus Hygiene: Excluded 316 test-generated records from `private/audit.jsonl`; 15,267 clean production records across 66 conversations (10 exclusion samples printed for verification)
+- [x] Verification 1: Audit schema & human approvals vs ML auto-allows discriminability (renamed `approved_inferred` [4,012] vs `no_post_event` [53]; 50-row join validation sampled; Antigravity host allow rules noted)
+- [x] Verification 2: Deny-reason visibility (executed approved `view_file` test on `.env`: verbatim reason reaches model context; proposed harmless `run_command` deny test)
+- [x] Verification 3: ONNX export executed with `onnx` (1.23.2) and `onnxruntime` (1.31.0); checker passed; logit parity 1.6e-5, route 40/40, blast 40/40; reversibility head issue documented
+- [x] Draft Eval Set: 50 items with 15 near-miss pairs (30 items) + 20 clean developer ops; zero leakage against train.json and val.json; compact review sheet in `docs/v2/eval-review-sheet.md`
+- [x] ASK Composition Analysis: Deep dive into 4,684 clean prompted events; root-caused low ML auto-allow to uncalibrated 0.90 confidence gate (mean safe confidence was 0.571); cold start was only 20 events (0.43%)
+- [x] Phase 0.2: Data scrubber implemented (`agent_airlock/scrubber.py` + `tests/test_scrubber.py`); 41 production traces (7,051 steps) extracted to `data/traces/`; trace replay harness with simulated approver (`scripts/replay.py`)
+- [x] Phase 0.3: Evaluation harness (`scripts/eval_harness.py`) computing false-allow (w/ rule-of-three upper bound), false-deny, false-ask, ECE with bootstrap CI, and latencies
+- [x] Phase 0.4: v1 baseline measured and recorded in `docs/v2/metrics.md`
 - [ ] Phase 1.1: Audit schema extension
 - [ ] Phase 1.2: Audit-log rule suggester
 - [ ] Phase 1.3: Exact-key decision cache
@@ -38,11 +40,9 @@
 - [ ] Phase 3.5: Release preparation & PR
 
 ## Next Actions (ordered, max 5; each executable by a fresh agent without extra context)
-1. Request Ani's approval for Verification Step 2: Safe test design for deny-reason visibility (`view_file` on `.env` to trigger Rule 6 without side effects).
-2. Upon Ani's approval of Step 2: Execute deny-reason visibility test and record result in `verified-facts.md` (Claim F-020).
-3. Build trace extractor and scrubber (`Phase 0.2`): Extract scrubbed replay traces from the 15,267 clean records in `private/audit.jsonl` into `data/traces/`.
-4. Implement trace replay harness & simulated approver (`Phase 0.2`): Replay session traces against v1 gateway.
-5. Record Gate G0 baseline metrics across v1 pipeline (`Phase 0.4`).
+1. Present Gate G0 Report to Ani for review and formal sign-off.
+2. Await Ani's approval on: (a) Draft evaluation review sheet in `docs/v2/eval-review-sheet.md`, (b) Harmless `run_command` deny test proposal (`Get-Content .env`), (c) Audit exclusion heuristics sample sanity-check.
+3. Upon Gate G0 sign-off: Begin Phase 1.1 (Audit schema extension).
 
 ## Blockers & Questions for Ani
 - [ ] Verification Step 2 Approval: Request permission to execute the safe deny-reason visibility test using a read-only `view_file` call on a non-existent `.env` path.

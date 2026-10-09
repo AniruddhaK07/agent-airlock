@@ -18,6 +18,7 @@ where = ["."]
 include = ["agent_airlock*"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     "ml: tests requiring real local ML model checkpoint",
 ]
