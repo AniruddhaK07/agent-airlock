@@ -1,17 +1,21 @@
 # Progress — Agent Airlock v2
 
 ## Current State (overwrite every session)
-- Date/session: 2026-10-09 session 1
-- Branch / last commit SHA: `v2-semantic` / `8673211`
-- Active phase / task: Phase 0.0 (Test Isolation)
+- Date/session: 2026-10-09 session 2
+- Branch / last commit SHA: `v2-semantic` / `788e516`
+- Active phase / task: Phase 0 Verification & Gate G0 Preparation
 - Gate status: G0 [ ] G1 [ ] G2 [ ] G3 [ ]
-- Test status (command + last result line): `conda run -n airlock-v2 pytest -rs` → `132 passed, 1 skipped in 19.47s`
+- Test status (command + last result line): `conda run -n airlock-v2 pytest -rs` → `136 passed, 1 skipped, 217 subtests passed in 27.68s` (Zero delta on live audit log)
 - Environment: Windows 11 Home Single Language (10.0.26300), Python 3.11.16 (conda env `airlock-v2`), AMD Ryzen 7 7445HS (6C/12T), NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM, CUDA available), 16GB RAM (~15.26 GiB visible)
 
 ## Phase Checklist
 - [x] Phase 0A: Orientation & Documentation Setup
-- [ ] Phase 0.0: Test isolation & hermetic harness (autouse audit fixture, fake client for non-ML, `ml` mark)
-- [ ] Phase 0.1: Eval set (`data/eval_set.jsonl`, canonical train.json/val.json, leakage checker)
+- [x] Phase 0.0: Test isolation & hermetic harness (commit `788e516`: autouse audit fixture, fake client for non-ML, `ml` mark, zero-byte live audit log delta)
+- [x] Phase 0.1: Dataset hygiene, canonical train.json/val.json, leakage checker (`scripts/check_eval_leakage.py`), validator (`scripts/validate_dataset.py`)
+- [x] Audit Corpus Hygiene: Excluded 316 test-generated records from `private/audit.jsonl`; 15,267 clean production records across 66 conversations
+- [x] Verification 1: Audit schema & human approvals vs ML auto-allows discriminability (4,012 human approvals vs 31 ML auto-allows)
+- [ ] Verification 2: Deny-reason visibility (safe test design proposed; waiting for Ani's approval before running)
+- [x] Verification 3: ONNX export feasibility diagnosed (PyTorch tracer succeeds on all heads; blocked only by missing `onnx` package)
 - [ ] Phase 0.2: Trace replay (`data/traces/`, scrubber, simulated approver)
 - [ ] Phase 0.3: Metrics & eval harness
 - [ ] Phase 0.4: Baseline against v1 (Gate G0)
@@ -34,15 +38,15 @@
 - [ ] Phase 3.5: Release preparation & PR
 
 ## Next Actions (ordered, max 5; each executable by a fresh agent without extra context)
-1. Complete Phase 0.0: Implement hermetic test isolation (autouse fixture enforcing temp audit log, `ml` mark skipping on missing checkpoints, fake Laya client for non-ML daemon tests to eliminate 12s teardown delay) and commit separately.
-2. Perform audit corpus hygiene: Filter test-generated records from `private/audit.jsonl`, log heuristics in `docs/v2/verified-facts.md`, and present before/after counts to Ani.
-3. Verify audit schema (Verification step 1): inspect whether human approvals can be distinguished from ML auto-allows in existing records.
-4. Draft safe test design for verification step 2 (deny-reason visibility) and await Ani's approval before running it.
-5. Execute verification step 3: ONNX export of fine-tuned ModernBERT with all 3 output heads.
+1. Request Ani's approval for Verification Step 2: Safe test design for deny-reason visibility (`view_file` on `.env` to trigger Rule 6 without side effects).
+2. Upon Ani's approval of Step 2: Execute deny-reason visibility test and record result in `verified-facts.md` (Claim F-020).
+3. Build trace extractor and scrubber (`Phase 0.2`): Extract scrubbed replay traces from the 15,267 clean records in `private/audit.jsonl` into `data/traces/`.
+4. Implement trace replay harness & simulated approver (`Phase 0.2`): Replay session traces against v1 gateway.
+5. Record Gate G0 baseline metrics across v1 pipeline (`Phase 0.4`).
 
 ## Blockers & Questions for Ani
-- [ ] Test suite isolation issue: `tests/test_daemon_ipc.py` does not configure `audit.log_file`, so test runs write to the real `~/.gemini/antigravity-cli/audit.jsonl`. When we start Phase 0, we propose isolating `GatewayConfig(audit=AuditConfig(log_file=...))` in test fixtures.
-- [ ] Note on `private/` trace log: confirmed `private/audit.jsonl` is present (24.8 MB, 24,768,804 bytes). We will use this read-only copy for trace generation and replay mining.
+- [ ] Verification Step 2 Approval: Request permission to execute the safe deny-reason visibility test using a read-only `view_file` call on a non-existent `.env` path.
+- [ ] Confirmation to install `onnx` and `onnxruntime` in `airlock-v2` for Phase 1.5 ONNX export.
 
 ## Handoff Notes (half-done work, gotchas, commands that need special flags)
 - Active conda environment for v2 development is `airlock-v2`. Never create or modify other environments.
@@ -52,6 +56,12 @@
 - `agent-airlock-daemon --status/--stop/--foreground` are unparsed by daemon `main()`; do not rely on them.
 
 ## Session Log (append-only, newest first)
+### 2026-10-09 session 2
+- Did: Implemented hermetic test isolation (Phase 0.0, commit `788e516`): autouse audit path guard in `tests/conftest.py`, network connection blocker, `FakeLayaClient` for non-ML tests, `@pytest.mark.ml` tagging. Verified 0-byte change to live audit log during full suite execution (136 passed, 1 skipped). Built dataset tooling (`scripts/check_eval_leakage.py` and `scripts/validate_dataset.py`) confirming zero leakage between canonical `data/train.json` (160) and `data/val.json` (40), and detecting historical benchmark overlap. Analyzed `private/audit.jsonl` (15,583 raw records): excluded 316 test records (2.03%), yielding 15,267 clean production records (97.97%) across 66 conversations. Verified human approval discriminability (4,012 approvals vs 31 ML auto-allows). Diagnosed ONNX export feasibility (`scripts/diagnose_onnx_export.py`): PyTorch tracer successfully traces `DecisionModel` and ModernBERT encoder with all 3 heads; serialization only awaits `onnx` package. Formulated safe test proposal for deny-reason visibility.
+- Verified: Live audit log diff is 0 across full test suite. Human approvals are observable via matching `PostToolUse` events. Model graph traces cleanly without unsupported ops.
+- Decisions made: ADR-002, ADR-003.
+- Metrics recorded: M-003 (hermetic test run & zero delta), M-004 (audit corpus hygiene & approval correlation).
+
 ### 2026-10-09 session 1
 - Did: Completed Phase 0A Orientation. Inspected repository structure, pyproject.toml, hooks, daemon, policy engine, audit schema, and tests. Reconciled reality against Section 6 and logged discrepancies. Ran baseline test suite (`pytest -rs`), finding skip reason. Diagnosed root cause of `test_autospawn_failure_falls_back_to_force_ask` runtime (~11-13s) and network hang behavior without local checkpoints. Identified test isolation leak where test suite touches live `audit.jsonl`. Created `docs/v2/` documentation suite.
 - Verified: Windows 11 Home Single Language, AMD Ryzen 7 7445HS, NVIDIA RTX 4050 Laptop GPU (CUDA enabled), 16GB RAM. Test baseline: 132 passed, 1 skipped (POSIX socket permissions). Model load time ~11.93s. Conda environment `airlock-v2`.
