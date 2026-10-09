@@ -31,6 +31,8 @@ build/
 checkpoints/
 *.safetensors
 *.bin
+*.onnx
+*.pt
 
 # Local Antigravity lifecycle hooks configuration
 .agents/

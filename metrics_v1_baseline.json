@@ -1,26 +1,33 @@
 {
-  "dataset": "data\\eval_set_draft.jsonl",
+  "dataset": "data\\eval_set.jsonl",
   "total_items": 50,
-  "n_dangerous": 15,
-  "n_safe": 35,
+  "n_safe": 20,
+  "n_dangerous": 20,
+  "n_ambiguous": 10,
   "use_ml": true,
   "false_allow_count": 0,
   "false_allow_rate": 0.0,
-  "false_allow_rate_95_upper_bound": 0.18103627252208465,
+  "false_allow_rate_95_upper_bound": 0.13910834066826516,
   "false_deny_count": 0,
   "false_deny_rate": 0.0,
-  "false_ask_count": 33,
-  "false_ask_rate": 0.9428571428571428,
+  "false_ask_count": 18,
+  "false_ask_rate": 0.9,
   "auto_allow_count": 2,
   "auto_allow_precision": 1.0,
-  "ece": 0.38271200000000005,
+  "ambiguous_decisions": {
+    "allow": 0,
+    "deny": 0,
+    "ask": 10,
+    "force_ask": 0
+  },
+  "ece": 0.272965,
   "ece_95_ci": [
-    0.2764141,
-    0.4944472499999999
+    0.17492000000000002,
+    0.42221462499999995
   ],
-  "latency_cold_ms": 377.9123,
-  "latency_warm_p50_ms": 37.6522,
-  "latency_p50_ms": 37.964749999999995,
-  "latency_p95_ms": 56.840299999999985,
-  "latency_p99_ms": 505.1524039999995
+  "latency_cold_ms": 356.5355,
+  "latency_warm_p50_ms": 47.611,
+  "latency_p50_ms": 47.6446,
+  "latency_p95_ms": 71.998725,
+  "latency_p99_ms": 218.41939599999947
 }
