@@ -209,6 +209,24 @@ class PIDManager:
             logger.warning("Failed to parse PID file %s: %s", self.pid_file, e)
             return None
 
+    def read_info(self) -> Optional[Dict[str, Any]]:
+        """
+        Reads the full metadata dict from the PID file if it exists and is valid.
+        """
+        if not self.pid_file.is_file():
+            return None
+        try:
+            content = self.pid_file.read_text(encoding="utf-8").strip()
+            if not content:
+                return None
+            if content.startswith("{"):
+                return json.loads(content)
+            pid = int(content.splitlines()[0].strip())
+            return {"pid": pid}
+        except Exception as e:
+            logger.warning("Failed to parse PID metadata %s: %s", self.pid_file, e)
+            return None
+
     def is_running(self) -> bool:
         """
         Returns True if another instance of the daemon is actively running.

@@ -104,24 +104,33 @@ def split_command_chain(cmd: str) -> List[str]:
     """
     Splits a compound command string into individual sub-commands and extracted subshells.
     Ensures that every part of a chained payload can be checked against hard-deny rules.
+    Bounded to prevent DoS from massive chains.
     """
     if not cmd:
         return []
 
+    # Fast guard: if no chaining characters present, single command
+    if not any(c in cmd for c in (';', '&', '|', '\n', '\r', '$', '`')):
+        return [cmd.strip()] if cmd.strip() else []
+
     sub_commands: List[str] = []
 
-    # 1. Extract subshell command substitutions
+    # 1. Extract subshell command substitutions (bounded)
     for match in SUBSHELL_PATTERN.finditer(cmd):
         sub_cmd = match.group(1) or match.group(2)
         if sub_cmd and sub_cmd.strip():
             sub_commands.append(sub_cmd.strip())
+            if len(sub_commands) >= 16:
+                break
 
-    # 2. Split on chain operators: ;, &&, ||, |, &, \n, \r
+    # 2. Split on chain operators: ;, &&, ||, |, &, \n, \r (bounded to 32)
     parts = re.split(r';|&&|\|\||\||&|\n|\r', cmd)
-    for part in parts:
+    for part in parts[:32]:
         cleaned = part.strip()
         if cleaned:
             sub_commands.append(cleaned)
+            if len(sub_commands) >= 32:
+                break
 
     return sub_commands
 
@@ -255,6 +264,10 @@ def extract_subshell_and_encoded_payloads(cmd: str, max_depth: int = 3) -> List[
     if not cmd:
         return []
 
+    cmd_lower = cmd.lower()
+    if not any(k in cmd_lower for k in ("-c", "/c", "-enc", "-encodedcommand", "wsl", "iex", "invoke-expression", "powershell", "pwsh", "$(", "`")):
+        return []
+
     all_payloads: List[str] = []
     seen = {cmd}
     current_layer = [cmd]
@@ -268,6 +281,8 @@ def extract_subshell_and_encoded_payloads(cmd: str, max_depth: int = 3) -> List[
                     seen.add(item)
                     all_payloads.append(item)
                     next_layer.append(item)
+                    if len(all_payloads) >= 16:
+                        return all_payloads
         if not next_layer:
             break
         current_layer = next_layer
@@ -319,6 +334,11 @@ def is_tampering_command(cmd: str) -> bool:
     any protected Agent Airlock runtime surface file.
     """
     if not cmd or not cmd.strip():
+        return False
+
+    cmd_lower = cmd.lower()
+    # Fast guard: if no airlock runtime signature exists in the string, it cannot be tampering
+    if not any(sig in cmd_lower for sig in ("policy", "hooks", ".sock", ".pid", ".token", ".agents", "airlock")):
         return False
 
     norm = normalize_command(cmd)

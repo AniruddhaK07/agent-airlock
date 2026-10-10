@@ -34,6 +34,15 @@ def is_test_record(rec: Dict[str, Any]) -> bool:
     return False
 
 
+def parse_timestamp(ts_str: Optional[str]) -> Optional[datetime]:
+    if not ts_str:
+        return None
+    try:
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def build_traces(min_steps: int = 5) -> None:
     if not AUDIT_PATH.exists():
         raise FileNotFoundError(f"Source audit file not found: {AUDIT_PATH}")
@@ -68,7 +77,7 @@ def build_traces(min_steps: int = 5) -> None:
     for cid, records in conv_records.items():
         # Separate PreToolUse and PostToolUse
         pre_events = []
-        post_map = {}  # (step_idx, tool_name) -> post_record
+        post_map = defaultdict(list)  # (step_idx, tool_name) -> list of post records
 
         for r in records:
             et = r.get("event_type")
@@ -78,7 +87,7 @@ def build_traces(min_steps: int = 5) -> None:
             if et == "PreToolUse":
                 pre_events.append(r)
             elif et == "PostToolUse":
-                post_map[key] = r
+                post_map[key].append(r)
 
         if len(pre_events) < min_steps:
             continue
@@ -91,7 +100,19 @@ def build_traces(min_steps: int = 5) -> None:
             sidx = pre.get("step_idx")
             tname = pre.get("tool_name")
             key = (sidx, tname)
-            post = post_map.get(key)
+            posts = post_map.get(key, [])
+
+            # Match post record with minimum non-negative delay <= 600s
+            pre_ts = parse_timestamp(pre.get("timestamp"))
+            matched_post = None
+            min_delta = None
+            for p in posts:
+                post_ts = parse_timestamp(p.get("timestamp"))
+                if post_ts and pre_ts and post_ts >= pre_ts:
+                    delta = (post_ts - pre_ts).total_seconds()
+                    if min_delta is None or delta < min_delta:
+                        min_delta = delta
+                        matched_post = p
 
             dec = pre.get("final_decision")
             tool_args = pre.get("tool_args", {})
@@ -100,20 +121,31 @@ def build_traces(min_steps: int = 5) -> None:
             else:
                 cmd = str(tool_args)
 
-            # Infer human approval
-            # If decision was ask/force_ask: approved if matching PostToolUse found
+            # Infer human approval and latency_class
             if dec in ("ask", "force_ask"):
-                human_approved = (post is not None)
+                if matched_post and min_delta is not None and min_delta <= 600.0:
+                    human_approved = True
+                    if min_delta < 1.5:
+                        latency_class = "host_auto"
+                    else:
+                        latency_class = "human_prompt"
+                else:
+                    human_approved = False
+                    latency_class = "unapproved"
             elif dec == "allow":
                 human_approved = True
+                latency_class = "v1_allow"
+            elif dec == "deny":
+                human_approved = False
+                latency_class = "v1_deny"
             else:
                 human_approved = False
+                latency_class = "unknown"
 
             # Infer execution outcome from post event
             outcome = "unknown"
-            if post:
-                # check error or exit code in tool_result
-                res = post.get("tool_result") or {}
+            if matched_post:
+                res = matched_post.get("tool_result") or {}
                 if isinstance(res, dict):
                     if res.get("error") or res.get("exit_code", 0) != 0:
                         outcome = "failure"
@@ -125,7 +157,7 @@ def build_traces(min_steps: int = 5) -> None:
                     outcome = "success"
             elif dec == "deny":
                 outcome = "denied"
-            elif dec in ("ask", "force_ask") and not post:
+            elif dec in ("ask", "force_ask") and not matched_post:
                 outcome = "rejected_or_aborted"
 
             step_data = {
@@ -139,6 +171,7 @@ def build_traces(min_steps: int = 5) -> None:
                 "policy_verdict": pre.get("policy_verdict"),
                 "matched_rule_id": pre.get("matched_rule_id"),
                 "human_approved_inferred": human_approved,
+                "latency_class": latency_class,
                 "outcome": outcome,
             }
 

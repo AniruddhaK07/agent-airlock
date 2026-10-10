@@ -232,10 +232,14 @@ class IPCRouter:
         audit_id = self._generate_audit_id()
 
         # Deterministic evaluation via HardPolicyEngine
-        policy_result: PolicyResult = self.policy_engine.evaluate(tool_name, tool_args)
+        policy_result: PolicyResult = self.policy_engine.evaluate(
+            tool_name, tool_args, workspace_root=ws_state.workspace_root
+        )
+        t_l1 = time.perf_counter()
+        l1_lat = (t_l1 - t_start) * 1000.0
 
         if policy_result.verdict == PolicyVerdict.DENY:
-            latency_ms = (time.perf_counter() - t_start) * 1000.0
+            latency_ms = l1_lat
             res = {
                 "version": version,
                 "status": "success",
@@ -247,10 +251,15 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
-            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            self._log_pre_tool_event(
+                payload, ws_state, policy_result, res,
+                latency_ms=latency_ms,
+                decision_source="l1",
+                layer_latencies_ms={"l1": round(l1_lat, 3)},
+            )
             return res
         elif policy_result.verdict == PolicyVerdict.ALLOW:
-            latency_ms = (time.perf_counter() - t_start) * 1000.0
+            latency_ms = l1_lat
             res = {
                 "version": version,
                 "status": "success",
@@ -262,10 +271,15 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
-            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            self._log_pre_tool_event(
+                payload, ws_state, policy_result, res,
+                latency_ms=latency_ms,
+                decision_source="l1",
+                layer_latencies_ms={"l1": round(l1_lat, 3)},
+            )
             return res
         elif policy_result.rule_id == "unparseable-command-syntax":
-            latency_ms = (time.perf_counter() - t_start) * 1000.0
+            latency_ms = l1_lat
             res = {
                 "version": version,
                 "status": "fail_closed",
@@ -277,11 +291,18 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
-            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            self._log_pre_tool_event(
+                payload, ws_state, policy_result, res,
+                latency_ms=latency_ms,
+                decision_source="fallback",
+                layer_latencies_ms={"l1": round(l1_lat, 3)},
+            )
             return res
         else:
             # PolicyVerdict.AMBIGUOUS:
             # 1. Circuit Breaker: check for repeating failure loops before probabilistic gating
+            t_cb_start = time.perf_counter()
+            cb_res = None
             if ws_state.circuit_breaker:
                 cb_res = ws_state.circuit_breaker.check_pre_tool(
                     tool_name=tool_name,
@@ -289,6 +310,7 @@ class IPCRouter:
                     step_idx=payload.get("stepIdx", 0),
                 )
                 if cb_res.is_tripped:
+                    cb_lat = (time.perf_counter() - t_cb_start) * 1000.0
                     latency_ms = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
@@ -307,11 +329,14 @@ class IPCRouter:
                         payload, ws_state, policy_result, res,
                         circuit_breaker_tripped=True,
                         latency_ms=latency_ms,
+                        decision_source="l2",
+                        layer_latencies_ms={"l1": round(l1_lat, 3), "l2": round(cb_lat, 3)},
                     )
                     return res
 
             # 2. Route through Jev Integration Layer if configured and ready
             if self.jev_client and self.jev_evaluator and self.model_ready:
+                cb_lat = (time.perf_counter() - t_cb_start) * 1000.0
                 t0 = time.perf_counter()
                 try:
                     context = {
@@ -352,6 +377,8 @@ class IPCRouter:
                         circuit_breaker_tripped=False,
                         jev_evaluation=res["jevEvaluation"],
                         latency_ms=total_latency,
+                        decision_source="l3",
+                        layer_latencies_ms={"l1": round(l1_lat, 3), "l2": round(cb_lat, 3), "l3": round(latency, 3)},
                     )
                     return res
                 except Exception as e:
@@ -383,17 +410,22 @@ class IPCRouter:
                         payload, ws_state, policy_result, res,
                         circuit_breaker_tripped=False,
                         latency_ms=total_latency,
+                        decision_source="fallback",
+                        layer_latencies_ms={"l1": round(l1_lat, 3), "l2": round(cb_lat, 3), "l3": round(latency, 3)},
                     )
                     return res
             else:
                 # No Jev client configured or model still loading in background -> fail-closed to "ask"
+                cb_lat = (time.perf_counter() - t_cb_start) * 1000.0
                 latency_ms = (time.perf_counter() - t_start) * 1000.0
                 if self.model_loading and not self.model_ready:
                     status_val = "fail_closed"
                     reason_val = "Model initializing in background; failing closed to human confirmation."
+                    dec_source = "fallback"
                 else:
                     status_val = "success"
                     reason_val = policy_result.reason or "Ambiguous action requires user confirmation."
+                    dec_source = "l1"
 
                 res = {
                     "version": version,
@@ -406,7 +438,12 @@ class IPCRouter:
                     "auditId": audit_id,
                     "workspaceRoot": ws_state.workspace_root,
                 }
-                self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+                self._log_pre_tool_event(
+                    payload, ws_state, policy_result, res,
+                    latency_ms=latency_ms,
+                    decision_source=dec_source,
+                    layer_latencies_ms={"l1": round(l1_lat, 3), "l2": round(cb_lat, 3)},
+                )
                 return res
 
     def _handle_post_tool_use(
@@ -474,6 +511,8 @@ class IPCRouter:
         circuit_breaker_tripped: bool = False,
         jev_evaluation: Optional[Dict[str, Any]] = None,
         latency_ms: float = 0.0,
+        decision_source: Optional[str] = None,
+        layer_latencies_ms: Optional[Dict[str, float]] = None,
     ) -> None:
         if not self.audit_logger:
             return
@@ -481,6 +520,9 @@ class IPCRouter:
         try:
             from agent_airlock.audit.models import AuditEvent
             tool_call = payload.get("toolCall", {})
+            tool_args = dict(tool_call.get("args", {}))
+            cwd = payload.get("cwd") or tool_args.get("Cwd") or tool_args.get("cwd") or ws_state.workspace_root
+            policy_hash = getattr(self.policy_engine, "policy_hash", None)
             event = AuditEvent(
                 event_id=res.get("auditId") or self._generate_audit_id(),
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -488,7 +530,7 @@ class IPCRouter:
                 step_idx=int(payload.get("stepIdx", 0)),
                 event_type="PreToolUse",
                 tool_name=str(tool_call.get("name", "")),
-                tool_args=dict(tool_call.get("args", {})),
+                tool_args=tool_args,
                 policy_verdict=policy_result.verdict.value,
                 matched_rule_id=policy_result.rule_id,
                 circuit_breaker_tripped=circuit_breaker_tripped,
@@ -497,6 +539,10 @@ class IPCRouter:
                 reason=str(res.get("reason", "")),
                 latency_ms=round(float(latency_ms), 3),
                 workspace_root=ws_state.workspace_root,
+                decision_source=decision_source,
+                cwd=str(cwd) if cwd else None,
+                policy_hash=str(policy_hash) if policy_hash else None,
+                layer_latencies_ms=layer_latencies_ms,
             )
             self.audit_logger.log(event)
         except Exception as e:
@@ -516,6 +562,9 @@ class IPCRouter:
         try:
             from agent_airlock.audit.models import AuditEvent
             tool_call = payload.get("toolCall", {})
+            tool_args = dict(tool_call.get("args", {}))
+            cwd = payload.get("cwd") or tool_args.get("Cwd") or tool_args.get("cwd") or ws_state.workspace_root
+            policy_hash = getattr(self.policy_engine, "policy_hash", None)
             event = AuditEvent(
                 event_id=audit_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -523,7 +572,7 @@ class IPCRouter:
                 step_idx=int(payload.get("stepIdx", 0)),
                 event_type="PostToolUse",
                 tool_name=str(tool_call.get("name", "")),
-                tool_args=dict(tool_call.get("args", {})),
+                tool_args=tool_args,
                 policy_verdict="none",
                 matched_rule_id=None,
                 circuit_breaker_tripped=False,
@@ -532,6 +581,8 @@ class IPCRouter:
                 reason=str(error_msg or "Execution recorded successfully"),
                 latency_ms=round(float(latency_ms), 3),
                 workspace_root=ws_state.workspace_root,
+                cwd=str(cwd) if cwd else None,
+                policy_hash=str(policy_hash) if policy_hash else None,
             )
             self.audit_logger.log(event)
         except Exception as e:

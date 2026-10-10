@@ -1,11 +1,11 @@
 # Progress — Agent Airlock v2
 
-## Current State (overwrite every session)
-- Date/session: 2026-10-09 session 3
-- Branch / last commit SHA: `v2-semantic` / `788e516` (Phase 0 fixes ready for commit)
-- Active phase / task: Gate G0 Complete — Fixes Delivered, Ready for Ani Sign-Off & Phase 1.0
-- Gate status: G0 [PASS] G1 [ ] G2 [ ] G3 [ ]
-- Test status (command + last result line): `conda run -n airlock-v2 pytest` → `145 passed, 1 skipped in 23.64s` (Hermetic isolation verified; zero delta on live audit log; repo hygiene test passing)
+### Current State (overwrite every session)
+- Date/session: 2026-10-10 session 6
+- Branch / last commit SHA: `v2-semantic` / `ab95a47`
+- Active phase / task: Phase 1.2 Remediation Complete (L1 ReDoS/latency resolved, Family A reconciled & hardened, human_prompt headline reporting instituted, held-out set protocol confirmed) -> Starting Phase 1.3 Audit-Log Rule Suggester
+- Gate status: G0 [PASS] G1 [IN PROGRESS] G2 [ ] G3 [ ]
+- Test status (command + last result line): `conda run -n airlock-v2 pytest` → `161 passed, 1 skipped in 21.72s` (Full hermetic isolation; zero delta on live audit log; repo hygiene clean)
 - Environment: Windows 11 Home Single Language (10.0.26300), Python 3.11.16 (conda env `airlock-v2`), AMD Ryzen 7 7445HS (6C/12T), NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM, CUDA available), 16GB RAM (~15.26 GiB visible)
 
 ## Phase Checklist
@@ -22,9 +22,16 @@
 - [x] Hard-Allow Flag Variant Investigation: Diagnosed root causes for `git status -s` and PowerShell read-only cmdlets prompting (missing L1 rules and strict regex anchoring)
 - [x] Repo Hygiene: Gitignored `*.onnx` and `*.pt`; verified zero `data/traces` tracked; added `tests/test_repo_hygiene.py`
 - [x] Draft Eval Growth Set: 16 near-miss pairs created in `data/eval_growth_draft.jsonl` for Ani's review
-- [ ] Phase 1.0: Daemon CLI parity (`--status`, `--stop`, `--foreground`) after auditing hook auto-spawn args
-- [ ] Phase 1.1: Audit schema extension (`decisionSource`, `cwd`, `policyHash`, `layerLatenciesMs`, `humanApproved: inferred`, `latency_class`)
-- [ ] Phase 1.2: L1 coverage expansion via Policy Change Protocol (PowerShell read-only, `git status` flags, `manage_task status`)
+- [x] Gate G0: Formal baseline harness validated and committed (commit `ab95a47`).
+- [x] Phase 1.0: Daemon CLI parity (`--status`, `--stop`, `--foreground`) implemented and tested in `agent_airlock/daemon/server.py` and `tests/test_daemon_cli.py` after auditing hook auto-spawn args.
+- [x] Phase 1.1: Audit schema extension (`decisionSource`, `cwd`, `policyHash`, `layerLatenciesMs`, `humanApproved: inferred`, `latency_class`, `cacheKeyHash`) implemented in `agent_airlock/audit/models.py`, `router.py`, and `reader.py` with backward compatibility and verified in `tests/test_audit_log.py`.
+- [x] Phase 1.2: L1 coverage expansion (Accepted Conditionally by Ani): Families A (Git), B (PowerShell), and C (Workspace Writes & Edits) implemented.
+- [x] Phase 1.2 Condition Remediation:
+  - [x] 1. Latency fix: Profiled per-rule, eliminated ReDoS in `deny-fork-bomb` (2326ms -> 0.34ms) and `allow-powershell-readonly` (594ms -> 0.33ms), added length cap (>4096 chars) before regex scanning head/tail 2048 chars, possessive/atomic groups, fast pre-filters. Added perf test `tests/test_policy_perf.py` (3 passed; 9 adversarial 10k-50k char inputs all <4.4ms p99, below 5ms threshold). Pure L1 replay latency restored to p50=0.631 ms, p95=3.415 ms, p99=7.575 ms.
+  - [x] 2. Family A count reconciliation: Documented in verified-facts.md and decisions.md: 140 bare `git status` commands were already allowed by v1 baseline rules; 59 prompted human git commands occurred in clean corpus. 231 total read-only git commands matched Family A, of which 227 were in `human_prompt` delay class; net human prompts saved is 51-59 prompts.
+  - [x] 3. Metric reporting discipline: Headline reported strictly as `human_prompt` only (~45 -> ~33.6 per 100 commands, saving 11.36 prompts/100 cmds). Legacy 61.8 -> 44.5 deprecated. `scripts/build_traces.py` and `scripts/replay.py` updated with explicit `latency_class` split.
+  - [x] 4. Family A hardening: Rejected `--no-index`, required paths inside `workspace_root`, dropped `git remote -v` to prevent token leakage. 29 unit tests pass in `tests/test_policy_engine.py`.
+  - [x] 5. Held-out set protocol: Confirmed `private/heldout-redteam.jsonl` will be provided by Ani for a single run at G1 and is kept strictly untouched for development.
 - [ ] Phase 1.3: Audit-log rule suggester
 - [ ] Phase 1.4: Exact-key decision cache
 - [ ] Phase 1.5: L0 grounding checks (SHADOW)
@@ -42,17 +49,18 @@
 - [ ] Phase 3.4: Sequence analysis activation decision
 - [ ] Phase 3.5: Release preparation & PR
 
+## Security Review: Git Inspection Rule Hardening
+Confidential security analysis recorded in gitignored `private/security-notes.md` per Policy Change Protocol.
+
 ## Next Actions (ordered, max 5; each executable by a fresh agent without extra context)
-1. Present Gate G0 fixes report to Ani and obtain sign-off.
-2. Commit Phase 0 fixes to `origin/v2-semantic` using explicit git staging paths.
-3. Begin Phase 1.0: Audit hook auto-spawn arguments in `agent_airlock/hooks/` and implement `--status`, `--stop`, and `--foreground` in `agent_airlock/daemon/server.py`.
-4. Begin Phase 1.1: Extend audit log schema per Section 8 and verified requirements.
-5. Begin Phase 1.2: Execute Policy Change Protocol for candidate L1 rules with Ani's per-rule approval.
+1. Phase 1.3: Design and implement the Audit-Log Rule Suggester (`agent_airlock/policy/suggester.py` and `scripts/suggest_rules.py`). Mine recurring human-approved commands from clean audit log, cluster into draft regex templates, enforce trust-root safety invariants, and export human-reviewable `.airlock-policy.yaml` snippets with simulated approval fatigue impact.
+2. Add unit/integration tests for rule suggester (`tests/test_rule_suggester.py`) verifying clustering, anti-evasion filtering, and YAML serialization.
+3. Run rule suggester on clean production corpus (`private/audit.jsonl`), review suggested candidates, and record findings in `docs/v2/`.
+4. Proceed to Phase 1.4: Exact-Key Decision Cache (placed after L2 circuit breaker per architecture contract).
+5. Proceed to Phase 1.5: L0 Grounding Checks (shadow mode).
 
 ## Blockers & Questions for Ani
-- [ ] Confirm 1.5s cutoff for `latency_class` (`host_auto` vs `human_prompt`) based on empirical histogram.
-- [ ] Review draft eval growth pairs (16 items in `docs/v2/eval-growth-draft.md`).
-- [ ] Sign off on Gate G0 to proceed with Phase 1.0.
+- None currently (Phase 1.2 condition remediation complete; proceed to Phase 1.3).
 
 ## Handoff Notes (half-done work, gotchas, commands that need special flags)
 - Active conda environment for v2 development is `airlock-v2`. Never create or modify other environments.
@@ -62,6 +70,43 @@
 - Never use `git add -A` or `git add .`; stage explicit files only. Forbidden: `data/traces/`, `private/`, `checkpoints/`, `*.onnx`, `*.pt`, `*.bin`, `*.safetensors`.
 
 ## Session Log (append-only, newest first)
+### 2026-10-10 session 6
+- Did: Addressed all 5 review items from Ani's conditional review of Phase 1.2:
+  1. Latency & ReDoS profiling/remediation: pinpointed catastrophic backtracking in `deny-fork-bomb` (2326ms -> 0.34ms) and `allow-powershell-readonly` (594ms -> 0.33ms); added length cap before regex scanning (disqualifies >4096 chars from hard-allow; scans head/tail 2048 chars for deny); eliminated unbounded `.*?` and nested quantifiers across destructive FS, pipe, and network regexes. Built `tests/test_policy_perf.py` verifying 9 adversarial long inputs (10k-50k chars) stay strictly below 5.0 ms p99 (all < 4.4 ms p99). Replay pure L1 latency restored to p50=0.631 ms, p95=3.415 ms, p99=7.575 ms (down from 2.5/300/718 ms).
+  2. Family A count reconciliation: fully documented reconciliation in decisions.md (ADR-010) and verified-facts.md (F-054): 140 bare `git status` commands were already allowed in v1; 59 prompted read-only git commands occurred in clean corpus. 231 was total read-only git commands matching Family A (227 in human_prompt class, of which 168 were already allowed). True human prompts saved by Family A is 51–59 prompts (~0.8 per 100 commands).
+  3. Metric reporting discipline: headline fatigue metric reported strictly as `human_prompt` only (~45 -> ~33.6 per 100 commands, saving 11.36 prompts/100 cmds). Legacy 61.8 -> 44.5 conflated host auto-approvals and is deprecated. Updated `scripts/build_traces.py` and `scripts/replay.py` to calculate and report `latency_class` split (`human_prompt`, `host_auto`, `unapproved`, `v1_allow`, `v1_deny`).
+  4. Family A hardening: rejected `--no-index`, required paths inside `workspace_root`, and dropped `git remote -v` from hard-allow to force ASK, preventing URL token exposure. Verified in `tests/test_policy_engine.py` (29 passed).
+  5. Held-out set protocol confirmed: `private/heldout-redteam.jsonl` will be provided by Ani for a single run at G1; kept strictly untouched.
+  Full test suite: 161 passed, 1 skipped in 21.72s.
+- Verified: Full hermetic pytest suite passes (161 passed, 1 skipped). Live audit log zero delta. Repo hygiene clean (2/2).
+- Decisions made: ADR-009, ADR-010, ADR-011.
+- Metrics recorded: M-017, M-018, M-019.
+
+### 2026-10-10 session 5
+- Did: Implemented and validated Rule Families A, B, and C in `agent_airlock/policy/default_rules.py`, `agent_airlock/policy/engine.py`, and `agent_airlock/daemon/router.py` with all Ani amendments.
+  1. Denominator discipline: recomputed clean production corpus figures with canonical denominator = 7,084 clean PreToolUse commands (`human_prompt` class): Family A saved 227 prompts (3.20/100 cmds); Family B saved 280 prompts (3.95/100 cmds); Family C saved 582 prompts (8.22/100 cmds); Combined saved 1,089 prompts (15.37 per 100 commands across 7,084 commands). Total matches: 1,578 (22.28 per 100 commands).
+  2. Rule Family A (Git Read-Only): implemented negative lookahead permitting `--oneline`, `--pretty=oneline`, `--online` while blocking `--ou*` and `-o*`; enforced `-C <path>` containment inside `workspace_root`.
+  3. Rule Family B (PowerShell Read-Only): implemented non-posix tokenization to preserve Windows backslash path semantics; permitted pipelines strictly to `Select-Object`, `Sort-Object`, `Measure-Object`, `Out-String`, `Format-*`; rejected `-Wait`, external paths, banned metacharacters, drives (`Env:`, `HKLM:`, `HKCU:`), UNC, and URLs. Hardened `deny-credentials-and-secrets` and `deny-credentials-in-command` to protect `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.kube/`, `.gemini/` tokens, browser profiles, and `~/AppData` while excluding `AppData\Local\Temp` used by test workspaces.
+  4. Rule Family C (Workspace Writes & Edits): implemented realpath containment refusing drive roots, user home, or home ancestors; comprehensive trust-root exclusion ledger (package manifests, build files, scripts directly under `scripts/`, `.airlock-policy.yaml`, `agent_airlock/**`, sensitive configs/extensions). Verified invariant that no L1 allow rule executes workspace code.
+  5. Evaluated canonical eval set (`data/eval_set.jsonl`, N=50): False-Allow rate strictly 0.00% (0/20); False-Deny 0.00% (0/20); False-Ask dropped to 75.00% (15/20); Auto-Allow Precision 100.00% (5/5).
+  6. Evaluated growth draft set (`data/eval_growth_draft.jsonl`, N=16): False-Allow 0.00% (0/6); False-Deny 0.00% (0/8); False-Ask 62.50% (5/8); Auto-Allow Precision 100.00% (3/3).
+  7. Replayed 41 clean production traces (7,051 steps): ALLOW increased to 3,879 (55.01%, up from 37.68%); ASK decreased to 3,134 (44.45%, down from 61.79%); Approval Fatigue Rate dropped to 44.45 ASKs per 100 commands (saving 17.34 ASKs per 100 commands overall). Zero circuit breaker trips.
+  8. Full test suite: 158 passed, 1 skipped in 23.05s hermetically. Added ADR-006, ADR-007, and ADR-008.
+- Verified: Full hermetic pytest suite passes (158 passed, 1 skipped). Live audit log zero delta. Repo hygiene clean.
+- Decisions made: ADR-006, ADR-007, ADR-008.
+- Metrics recorded: M-010, M-011, M-012, M-013, M-014, M-015, M-016.
+
+### 2026-10-09 session 4
+- Did: Implemented Phase 1.0 daemon CLI parity, Phase 1.1 audit schema extension, Rule Family A, and verified revised proposals for Families B and C per Policy Change Protocol.
+  1. Confidentiality & Git hygiene: verified Git `--output` overwrite finding was NEVER committed and NEVER pushed; scrubbed all vulnerability details from tracked files into gitignored `private/security-notes.md`.
+  2. CLI `--stop` identity verification: hardened `--stop` in `agent_airlock/daemon/server.py` with `get_process_cmdline(pid)` check for `agent_airlock.daemon`. Stale or recycled PIDs (unrelated process) are NOT terminated, PID file is cleaned, exits 0. Added hermetic tests in `tests/test_daemon_cli.py` (6 passed).
+  3. Rule Family A (Git Read-Only): implemented approved rule in `agent_airlock/policy/default_rules.py` with flags on status (`-s`, `-sb`, `--short`, `--porcelain`, `--branch`), strict global prefixes (`-C <path>` with `(?-i:c)` case guard, `--no-pager`; forbidding `-c` and `--exec-path`), and strict `--output` guards rejecting any token starting with `--o` or `-o` (`--outp=x`, `-ofile`, `git show --output=main.py`, etc., preserving `--oneline`). Added 26 unit tests in `tests/test_policy_engine.py`.
+  4. Rule Family B (PowerShell Read-Only): revised per Ani's constraints (banning `$ ( ) { } @ ` ` ; & > <`, no script blocks, no `Env:`, `$env:`, `HKLM:`, `HKCU:`, UNC, or URLs; pipes only to `Select-Object`, `Sort-Object`, `Measure-Object`, `Out-String`, `Format-*`). Passed all 41 near-miss tests. Clean corpus match: 442 prompted commands saved (all in `human_prompt` class, saving 16.21 prompts per 100 commands).
+  5. Rule Family C (Workspace Writes & Edits): added invariant test `test_invariant_no_l1_allow_executes_workspace_code` verifying 0/21 execution commands match L1 allow rules. Revised specification with canonical realpath containment, refusing drive roots, user home, or home ancestors, and excluding `.vscode/`, `.github/`, `.husky/`, `.agents/`, `.git/`, `.pre-commit-config.yaml`, `.gitattributes`, `.gitmodules`, `.npmrc`, `.envrc`, `sitecustomize.py`, `*.pth`, `.env*`. Passed 25 safety/near-miss tests. Clean corpus match: 466 writes + 622 replaces = 1,088 events (saving 620 human prompts, 22.74 per 100 commands). 169 excluded.
+- Verified: Full test suite passes hermetically (`conda run -n airlock-v2 pytest`: 155 passed, 1 skipped in 29.51s). Repo hygiene passes (2/2).
+- Decisions made: ADR-004.
+- Metrics recorded: M-008 (daemon CLI unit tests), M-009 (Family A git tests & guards), M-010 (Family B near-miss & corpus matches), M-011 (Family C invariant & corpus matches).
+
 ### 2026-10-09 session 3
 - Did: Delivered all Gate G0 amendments and fixes requested by Ani.
   1. Enforced repo hygiene: verified `git ls-files data/traces` is empty, gitignored `*.onnx` and `*.pt`, added `tests/test_repo_hygiene.py` (passes).

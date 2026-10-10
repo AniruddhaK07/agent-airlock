@@ -222,30 +222,236 @@ class TestHardPolicyEngine(unittest.TestCase):
     # =========================================================================
 
     def test_safe_git_commands(self):
+        ws = "C:\\repo"
         safe_commands = [
             "git status",
+            "git status -s",
+            "git status -sb",
+            "git status --short",
+            "git status --porcelain",
+            "git status --branch",
+            "git -C src status",
+            "git -C C:\\repo status -sb",
+            "git --no-pager status",
+            "git --no-pager -C src status -s",
             "git diff",
             "git diff HEAD~1",
             "git diff --staged",
+            "git diff --stat",
+            "git -C src diff",
+            "git --no-pager diff",
             "git log",
             "git log -n 10",
             "git log --oneline",
+            "git log --pretty=oneline",
+            "git log --online",
+            "git --no-pager log",
             "git branch",
             "git branch -a",
             "git show",
             "git show HEAD",
+            "git show --oneline",
+            "git show HEAD:src/main.py",
             "git rev-parse --show-toplevel",
-            "git remote -v",
             "git tag -l",
         ]
         for cmd in safe_commands:
             with self.subTest(cmd=cmd):
-                result = self.engine.evaluate("run_command", {"CommandLine": cmd})
+                result = self.engine.evaluate("run_command", {"CommandLine": cmd}, workspace_root=ws)
                 self.assertEqual(
                     result.verdict,
                     PolicyVerdict.ALLOW,
                     f"Expected safe git command to be allowed: {cmd}"
                 )
+
+    def test_git_output_redirection_and_dangerous_flags_disallowed(self):
+        """
+        Verify that git output overwrite attempts (--ou, --outp, --output, -o, -ofile),
+        --no-index, git remote, dangerous global prefixes (-c, --exec-path), and external paths
+        are NEVER hard-allowed by L1.
+        """
+        ws = "C:\\repo"
+        disallowed_commands = [
+            "git diff --ou=x",
+            "git diff --outp=x",
+            "git diff --output=main.py",
+            "git diff -ofile",
+            "git diff -o file",
+            "git diff -o",
+            "git show --ou=x",
+            "git show --outp=x",
+            "git show --output=main.py",
+            "git show -ofile",
+            "git show -o",
+            "git log --ou=foo",
+            "git log --outp=foo",
+            "git log --output=foo",
+            "git log -ofile",
+            "git log -o foo",
+            "git log -o",
+            "git diff --no-index /etc/passwd /dev/null",
+            "git diff --no-index file1 file2",
+            "git remote -v",
+            "git remote",
+            "git -c core.editor=calc status",
+            "git -c alias.st=status st",
+            "git --exec-path=/bin status",
+            "git -C C:\\Windows status",  # external path
+            "git -C .. status",          # traversal outside
+            "git diff ../secret.txt",
+            "git diff -- C:\\Windows\\System32",
+            "git show HEAD:../secret",
+        ]
+        for cmd in disallowed_commands:
+            with self.subTest(cmd=cmd):
+                result = self.engine.evaluate("run_command", {"CommandLine": cmd}, workspace_root=ws)
+                self.assertNotEqual(
+                    result.verdict,
+                    PolicyVerdict.ALLOW,
+                    f"CRITICAL: Disallowed git command must NOT be hard-allowed: {cmd}"
+                )
+
+    def test_powershell_readonly_allowed(self):
+        """Verify that safe read-only PowerShell cmdlets contained within workspace_root are allowed."""
+        ws = "C:\\repo"
+        safe_ps_commands = [
+            "Get-ChildItem",
+            "Get-ChildItem -Path src",
+            "Get-ChildItem src",
+            "Get-ChildItem -Filter *.py",
+            "Get-Content README.md",
+            "Get-Content -Path src/main.py",
+            "Select-String -Pattern 'TODO' -Path src",
+            "Test-Path config.json",
+            "Get-Process",
+            "Get-Command git",
+            "Get-ChildItem | Select-Object Name, Length",
+            "Get-ChildItem | Sort-Object Length -Descending",
+            "Get-ChildItem | Measure-Object",
+            "Get-ChildItem | Format-Table -AutoSize",
+            "Get-ChildItem | Out-String",
+        ]
+        for cmd in safe_ps_commands:
+            with self.subTest(cmd=cmd):
+                result = self.engine.evaluate("run_command", {"CommandLine": cmd}, workspace_root=ws)
+                self.assertEqual(
+                    result.verdict,
+                    PolicyVerdict.ALLOW,
+                    f"Expected safe PowerShell command to be allowed: {cmd}"
+                )
+
+    def test_powershell_dangerous_and_sensitive_disallowed(self):
+        """Verify that -Wait, external paths, banned metacharacters, and sensitive denylist are rejected."""
+        ws = "C:\\repo"
+        disallowed_ps = [
+            "Get-Process -Wait",
+            "Get-Process python -Wait",
+            "Get-ChildItem C:\\Windows",
+            "Get-ChildItem ..\\outside",
+            "Get-Content -Path C:\\secret.txt",
+            "Get-Content .npmrc",
+            "Get-Content .pypirc",
+            "Get-Content .netrc",
+            "Get-Content .git-credentials",
+            "Get-Content .docker/config.json",
+            "Get-ChildItem .kube/config",
+            "Get-ChildItem .gemini/oauth.json",
+            "Get-ChildItem C:\\Users\\user\\AppData\\Local",
+            "Get-ChildItem 'C:\\Users\\user\\AppData\\Local\\Google\\Chrome\\User Data'",
+            "Get-ChildItem | Remove-Item",
+            "Get-ChildItem | Where-Object { $_.Length -gt 10 }",
+            "Get-Content Env:\\SECRET",
+            "$(Get-Process)",
+            "Get-Process @splat",
+            "Get-ChildItem `dir",
+            "powershell -Command Get-Process",
+            "iex 'Get-Process'",
+        ]
+        for cmd in disallowed_ps:
+            with self.subTest(cmd=cmd):
+                result = self.engine.evaluate("run_command", {"CommandLine": cmd}, workspace_root=ws)
+                self.assertNotEqual(
+                    result.verdict,
+                    PolicyVerdict.ALLOW,
+                    f"CRITICAL: Disallowed PowerShell command must NOT be hard-allowed: {cmd}"
+                )
+
+    def test_workspace_file_writes_allowed_and_trust_root_exclusions(self):
+        """Verify Rule Family C: ordinary workspace files allowed, trust roots and secrets excluded."""
+        ws = "C:\\repo"
+        safe_writes = [
+            f"{ws}\\src\\main.py",
+            f"{ws}\\tests\\test_feature.py",
+            f"{ws}\\README.md",
+            f"{ws}\\docs\\architecture.md",
+            f"{ws}\\components\\Button.tsx",
+        ]
+        for path in safe_writes:
+            with self.subTest(path=path):
+                res = self.engine.evaluate("write_to_file", {"TargetFile": path}, workspace_root=ws)
+                self.assertEqual(res.verdict, PolicyVerdict.ALLOW, f"Expected safe file write to be allowed: {path}")
+                res_edit = self.engine.evaluate("replace_file_content", {"TargetFile": path}, workspace_root=ws)
+                self.assertEqual(res_edit.verdict, PolicyVerdict.ALLOW, f"Expected safe file edit to be allowed: {path}")
+
+        # Trust roots and sensitive configs MUST NOT be auto-allowed (verdict != ALLOW)
+        excluded_trust_roots = [
+            f"{ws}\\package.json",
+            f"{ws}\\package-lock.json",
+            f"{ws}\\pnpm-lock.yaml",
+            f"{ws}\\yarn.lock",
+            f"{ws}\\pyproject.toml",
+            f"{ws}\\setup.py",
+            f"{ws}\\setup.cfg",
+            f"{ws}\\tox.ini",
+            f"{ws}\\conftest.py",
+            f"{ws}\\Makefile",
+            f"{ws}\\justfile",
+            f"{ws}\\Taskfile.yml",
+            f"{ws}\\Cargo.toml",
+            f"{ws}\\build.rs",
+            f"{ws}\\requirements.txt",
+            f"{ws}\\requirements-dev.txt",
+            f"{ws}\\Pipfile",
+            f"{ws}\\Dockerfile",
+            f"{ws}\\docker-compose.yml",
+            f"{ws}\\scripts\\deploy.sh",
+            f"{ws}\\scripts\\build.bat",
+            f"{ws}\\scripts\\run.ps1",
+            f"{ws}\\agent_airlock\\policy\\engine.py",
+            f"{ws}\\.vscode\\settings.json",
+            f"{ws}\\.github\\workflows\\ci.yml",
+            f"{ws}\\.husky\\pre-commit",
+            f"{ws}\\.pre-commit-config.yaml",
+            f"{ws}\\.gitattributes",
+            f"{ws}\\.gitmodules",
+            f"{ws}\\.npmrc",
+            f"{ws}\\.pypirc",
+            f"{ws}\\.netrc",
+            f"{ws}\\.envrc",
+            f"{ws}\\sitecustomize.py",
+            f"{ws}\\cert.pem",
+            f"{ws}\\secret.key",
+            f"{ws}\\lib\\inject.pth",
+        ]
+        for path in excluded_trust_roots:
+            with self.subTest(path=path):
+                res = self.engine.evaluate("write_to_file", {"TargetFile": path}, workspace_root=ws)
+                self.assertNotEqual(res.verdict, PolicyVerdict.ALLOW, f"Trust root must NOT be auto-allowed: {path}")
+
+        # Tier-0 anti-tamper must explicitly DENY active runtime files
+        anti_tamper_paths = [
+            f"{ws}\\.airlock-policy.yaml",
+            f"{ws}\\airlock-policy.yml",
+            f"{ws}\\.agents\\hooks.json",
+            f"{ws}\\daemon.sock",
+            f"{ws}\\daemon.pid",
+            f"{ws}\\daemon.token",
+        ]
+        for path in anti_tamper_paths:
+            with self.subTest(path=path):
+                res = self.engine.evaluate("write_to_file", {"TargetFile": path}, workspace_root=ws)
+                self.assertEqual(res.verdict, PolicyVerdict.DENY, f"Anti-tamper must hard-deny: {path}")
+                self.assertEqual(res.rule_id, "deny-airlock-runtime-tampering")
 
     def test_safe_filesystem_inspection(self):
         safe_commands = [
@@ -590,6 +796,48 @@ class TestHardPolicyEngine(unittest.TestCase):
                     res.verdict,
                     PolicyVerdict.DENY,
                     f"Subshell wrapper attack bypassed policy engine: {cmd}",
+                )
+
+    # =========================================================================
+    # 9. POLICY INVARIANT: NO L1 ALLOW RULE EXECUTES WORKSPACE-CONTROLLED CODE
+    # =========================================================================
+
+    def test_invariant_no_l1_allow_executes_workspace_code(self):
+        """
+        Invariant requirement: No deterministic L1 allow rule may match commands
+        that execute workspace-controlled code (scripts, tests, build steps).
+        These must fall through to ML/ASK until a verified trust-epoch cache exists.
+        """
+        code_execution_commands = [
+            "python script.py",
+            "python src/main.py",
+            "python -m unittest",
+            "python -m pytest",
+            "python3 app.py",
+            "node index.js",
+            "node server.js",
+            "npm test",
+            "npm start",
+            "npm run build",
+            "make",
+            "make test",
+            "pytest",
+            "pytest tests/",
+            "./gradlew build",
+            "./mvnw test",
+            "cargo run",
+            "go run main.go",
+            "bash run.sh",
+            "sh build.sh",
+            "./install.sh",
+        ]
+        for cmd in code_execution_commands:
+            with self.subTest(cmd=cmd):
+                res = self.engine.evaluate("run_command", {"CommandLine": cmd})
+                self.assertNotEqual(
+                    res.verdict,
+                    PolicyVerdict.ALLOW,
+                    f"INVARIANT VIOLATION: L1 allow rule '{res.rule_id}' matched workspace code execution: {cmd}",
                 )
 
 if __name__ == "__main__":

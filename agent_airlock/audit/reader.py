@@ -62,6 +62,8 @@ class AuditReader:
         tool_name: Optional[str] = None,
         circuit_breaker_tripped: Optional[bool] = None,
         rule_id: Optional[str] = None,
+        decision_source: Optional[str] = None,
+        human_approved: Optional[str] = None,
         start_time: Optional[Union[datetime, str]] = None,
         end_time: Optional[Union[datetime, str]] = None,
         limit: Optional[int] = None,
@@ -113,6 +115,10 @@ class AuditReader:
             if circuit_breaker_tripped is not None and ev.circuit_breaker_tripped != circuit_breaker_tripped:
                 continue
             if rule_id and ev.matched_rule_id != rule_id:
+                continue
+            if decision_source and ev.decision_source != decision_source:
+                continue
+            if human_approved and ev.human_approved != human_approved:
                 continue
 
             # Time range checks

@@ -26,13 +26,15 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r'\brm\s+(?:-[a-zA-Z0-9_\-]+\s+)*'
-                r'(?:(?:-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*|'
-                r'--recursive\s+--force|--force\s+--recursive|'
-                r'-[a-zA-Z]*r[a-zA-Z]*\s+-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*\s+-[a-zA-Z]*r[a-zA-Z]*|'
-                r'-[a-zA-Z]*r[a-zA-Z]*\s+--force|--force\s+-[a-zA-Z]*r[a-zA-Z]*|'
-                r'-[a-zA-Z]*f[a-zA-Z]*\s+--recursive|--recursive\s+-[a-zA-Z]*f[a-zA-Z]*)\s+)+'
-                r'(?:-[a-zA-Z0-9_\-]+\s+)*'
+                r'\brm\s++'
+                r'(?:'
+                r'-(?:[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\b|'
+                r'--recursive\s+--force\b|--force\s+--recursive\b|'
+                r'-[a-zA-Z]*r[a-zA-Z]*\b\s+-[a-zA-Z]*f[a-zA-Z]*\b|-[a-zA-Z]*f[a-zA-Z]*\b\s+-[a-zA-Z]*r[a-zA-Z]*\b|'
+                r'-[a-zA-Z]*r[a-zA-Z]*\b\s+--force\b|--force\b\s+-[a-zA-Z]*r[a-zA-Z]*\b|'
+                r'-[a-zA-Z]*f[a-zA-Z]*\b\s+--recursive\b|--recursive\b\s+-[a-zA-Z]*f[a-zA-Z]*\b'
+                r')'
+                r'(?>\s+-[a-zA-Z0-9_\-]+)*\s+'
                 r'(?:/(?:[\s*]|$|etc|var|usr|bin|sbin|root|boot|home|opt|dev|sys|proc)|~|\$HOME|\.\./)'
             ),
         ),
@@ -46,7 +48,7 @@ def get_default_rules() -> List[PolicyRule]:
             field="CommandLine",
             pattern=(
                 r'\b(?:rmdir|rd)\s+(?:/[sq]\s+)+[a-z]:\\?|'
-                r'\b(?:remove-item|ri|rm)\s+.*?(?:-[rR]ecurse\s+-[fF]orce|-[fF]orce\s+-[rR]ecurse).*?[a-z]:\\?|'
+                r'\b(?:remove-item|ri|rm)\s+[^\n\r;]{0,256}?(?:-[rR]ecurse\s+-[fF]orce|-[fF]orce\s+-[rR]ecurse)[^\n\r;]{0,256}?[a-z]:\\?|'
                 r'\bformat\s+[a-z]:|'
                 r'\bdiskpart\b'
             ),
@@ -73,8 +75,8 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r'\b(?:curl|wget|fetch)\b.*?\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|'
-                r'\becho\s+.*?\|\s*base64\s+-d\s*\|\s*(?:ba|z)?sh\b'
+                r'\b(?:curl|wget|fetch)\b[^|\r\n]*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|'
+                r'\becho\s+[^|\r\n]*\|\s*base64\s+-d\s*\|\s*(?:ba|z)?sh\b'
             ),
         ),
 
@@ -86,7 +88,7 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r'\b(?:invoke-webrequest|iwr|invoke-restmethod|irm)\b.*?\|\s*(?:invoke-expression|iex)\b'
+                r'\b(?:invoke-webrequest|iwr|invoke-restmethod|irm)\b[^|\r\n]*\|\s*(?:invoke-expression|iex)\b'
             ),
         ),
 
@@ -102,9 +104,12 @@ def get_default_rules() -> List[PolicyRule]:
                 r'(?:^|[/\\])\.env(?:\.[a-zA-Z0-9_-]+)?$|'
                 r'(?:^|[/\\])\.ssh[/\\](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys)$|'
                 r'(?:^|[/\\])\.aws[/\\](?:credentials|config)$|'
-                r'(?:^|[/\\])\.kube[/\\]config$|'
-                r'(?:^|[/\\])(?:\.npmrc|\.pypirc|\.netrc|_netrc|\.pgpass)$|'
+                r'(?:^|[/\\])\.kube(?:[/\\]|$)|'
+                r'(?:^|[/\\])(?:\.npmrc|\.pypirc|\.netrc|_netrc|\.pgpass|\.git-credentials)$|'
                 r'(?:^|[/\\])\.docker[/\\]config\.json$|'
+                r'(?:^|[/\\])\.gemini[/\\](?:oauth|auth|.*token.*)|'
+                r'(?:^|[/\\])(?:Google[/\\]Chrome|Microsoft[/\\]Edge|Mozilla[/\\]Firefox|Brave-Browser)[/\\]User Data|'
+                r'(?:^|[/\\])(?:AppData(?:$|[/\\](?!Local[/\\]Temp(?:[/\\]|$)))|%APPDATA%|%LOCALAPPDATA%)|'
                 r'/etc/(?:shadow|passwd|master\.passwd)'
                 r')'
             ),
@@ -119,11 +124,14 @@ def get_default_rules() -> List[PolicyRule]:
             field="CommandLine",
             pattern=(
                 r'(?:'
-                r'\.ssh/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)|'
-                r'\.aws/(?:credentials|config)|'
-                r'\.kube/config|'
-                r'\.npmrc|\.pypirc|\.netrc|\.pgpass|'
-                r'\.docker/config\.json|'
+                r'\.ssh[/\\](?:id_rsa|id_ed25519|id_ecdsa|id_dsa)|'
+                r'\.aws[/\\](?:credentials|config)|'
+                r'\.kube(?:[/\\]|$)|'
+                r'\.npmrc|\.pypirc|\.netrc|\.pgpass|\.git-credentials|'
+                r'\.docker[/\\]config\.json|'
+                r'\.gemini[/\\](?:oauth|auth|.*token.*)|'
+                r'(?:Google[/\\]Chrome|Microsoft[/\\]Edge|Mozilla[/\\]Firefox|Brave-Browser)[/\\]User Data|'
+                r'(?:AppData(?:$|[/\\](?!Local[/\\]Temp(?:[/\\]|$)))|%APPDATA%|%LOCALAPPDATA%)|'
                 r'/etc/shadow|/etc/passwd|'
                 r'\.env(?:\.[a-zA-Z0-9_-]+)?(?:\s+|$|["\'])'
                 r')'
@@ -138,10 +146,10 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r'\bnc(?:\.traditional|\.openbsd)?\s+.*?-e\s+(?:/bin/)?(?:ba|z)?sh|'
+                r'\bnc(?:\.traditional|\.openbsd)?\s+[^\r\n;|&]*-e\s+(?:/bin/)?(?:ba|z)?sh|'
                 r'(?:>&|&>|>|<)\s*/dev/(?:tcp|udp)/\S+|'
-                r'\bsocat\s+.*exec:|'
-                r'\bpython[23]?\s+-c\s+.*?(?:pty\.spawn|socket\..*connect)'
+                r'\bsocat\s+[^\r\n;|&]*exec:|'
+                r'\bpython[23]?\s+-c\s+[^\r\n]*?(?:pty\.spawn|socket\..*?connect)'
             ),
         ),
 
@@ -154,11 +162,10 @@ def get_default_rules() -> List[PolicyRule]:
             field="CommandLine",
             pattern=(
                 r'(?:'
-                r'([a-zA-Z0-9_.:]+)\s*\(\s*\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1|'
-                r':\(\)\s*\{.*?\}\s*;\s*:|'
-                r'while\s*\(\s*\$true\s*\)\s*\{\s*.*?(?:Start-Process|powershell|pwsh).*?\}|'
-                r'while\s+(?:true|:\s*;?)\s*;?\s*do\s+.*?(?:ba|z|da|k)?sh.*?&?\s*done|'
-                r'(\w+)\s*\(\s*\)\s*\{.*?\b\1\b\s*\|\s*\b\1\b.*?\}'
+                r':\(\)\s*\{[^}]*+\}\s*;\s*:|'
+                r'(?:^|(?<=[;&|\s]))([a-zA-Z0-9_.:]{1,32}+)\s*\(\s*\)\s*\{\s*\1\s*\|\s*\1\s*&\s*\}\s*;\s*\1|'
+                r'while\s*\(\s*\$true\s*\)\s*\{[^}]*?(?:Start-Process|powershell|pwsh)[^}]*?\}|'
+                r'while\s+(?:true|:\s*;?)\s*;?\s*do\s+.*?(?:ba|z|da|k)?sh.*?&?\s*done'
                 r')'
             ),
         ),
@@ -170,14 +177,21 @@ def get_default_rules() -> List[PolicyRule]:
         # 1. Read-only Git Inspection
         PolicyRule(
             id="allow-git-status-diff-log",
-            description="Read-only git queries with zero side effects",
+            description="Read-only git queries with zero side effects, guarded against --output redirection, --no-index, and sensitive URLs",
             verdict=PolicyVerdict.ALLOW,
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r'^git\s+(?:status|diff(?:\s+.*)?|log(?:\s+.*)?|'
-                r'show(?:\s+.*)?|rev-parse(?:\s+.*)?|describe(?:\s+.*)?|'
-                r'remote(?:\s+-v)?|tag(?:\s+-l)?|branch(?:\s+-[ravl]+(?:\s+\S+)?)?)$'
+                r'^git'
+                r'(?:\s+(?:--no-pager|(?-i:-C)\s+[^\s;&|`$(){}<>]+))*\s+'
+                r'(?:'
+                r'status(?:\s+(?:-[sb]+|--short|--porcelain(?:=[a-zA-Z0-9]+)?|--branch|[a-zA-Z0-9_\-\./\\]+))*|'
+                r'(?:diff|log|show)(?:\s+(?!--no-index\b|-(?:o(?!neline\b)\S*|-ou\S*))[^\s;&|`$(){}<>]+)*|'
+                r'rev-parse(?:\s+[^\s;&|`$(){}<>]+)*|'
+                r'describe(?:\s+[^\s;&|`$(){}<>]+)*|'
+                r'tag(?:\s+-l)?|'
+                r'branch(?:\s+-[ravl]+(?:\s+[^\s;&|`$(){}<>]+)?)?'
+                r')$'
             ),
         ),
 
@@ -205,5 +219,32 @@ def get_default_rules() -> List[PolicyRule]:
                 r'^(?:python|python3|node|npm|git|docker|go|rustc|cargo|ruff|black|pytest|echo)'
                 r'\s+(--version|-v|-V|--help|-h)$'
             ),
+        ),
+
+        # 4. Safe Read-only PowerShell Cmdlets (Rule Family B)
+        PolicyRule(
+            id="allow-powershell-readonly",
+            description="Safe read-only PowerShell cmdlets with zero side effects",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^(?:Get-ChildItem|Select-String|Get-Content|Test-Path|Get-Process|Get-Command)'
+                r'(?![^|\r\n]*?(?:-(?:wait)\b|Env:|HKLM:|HKCU:|\\\\|https?://|ftp://|\.\.[/\\]))'
+                r'[^|$(){}\@;&><\`\r\n]*+'
+                r'(?:\s*\|\s*(?:Select-Object|Sort-Object|Measure-Object|Out-String|Format-Table|Format-List|Format-Wide|Format-Custom)'
+                r'(?![^|\r\n]*?(?:-(?:wait)\b|Env:|HKLM:|HKCU:|\\\\|https?://|ftp://|\.\.[/\\]))'
+                r'[^|$(){}\@;&><\`\r\n]*+)*$'
+            ),
+        ),
+
+        # 5. Safe Workspace File Modifications (Rule Family C)
+        PolicyRule(
+            id="allow-workspace-file-modification",
+            description="Safe file write or replacement strictly contained within workspace root",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["write_to_file", "replace_file_content"],
+            field="TargetFile",
+            pattern=r'.*',  # Evaluated with realpath containment and trust-root exclusion ledger in HardPolicyEngine
         ),
     ]
