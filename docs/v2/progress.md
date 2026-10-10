@@ -2,10 +2,10 @@
 
 ### Current State (overwrite every session)
 - Date/session: 2026-10-10 session 6
-- Branch / last commit SHA: `v2-semantic` / `372b081`
+- Branch / last commit SHA: `v2-semantic` / `9067e7b`
 - Active phase / task: Phase 1.2 Remediation Complete (L1 ReDoS/latency resolved, Family A reconciled & hardened, human_prompt headline reporting instituted, held-out set protocol confirmed) -> Starting Phase 1.3 Audit-Log Rule Suggester
 - Gate status: G0 [PASS] G1 [IN PROGRESS] G2 [ ] G3 [ ]
-- Test status (command + last result line): `conda run -n airlock-v2 pytest` → `161 passed, 1 skipped in 21.72s` (Full hermetic isolation; zero delta on live audit log; repo hygiene clean)
+- Test status (command + last result line): `conda run -n airlock-v2 pytest` → `167 passed, 1 skipped in 22.41s` (Full hermetic isolation; zero delta on live audit log; repo hygiene clean)
 - Environment: Windows 11 Home Single Language (10.0.26300), Python 3.11.16 (conda env `airlock-v2`), AMD Ryzen 7 7445HS (6C/12T), NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM, CUDA available), 16GB RAM (~15.26 GiB visible)
 
 ## Phase Checklist
