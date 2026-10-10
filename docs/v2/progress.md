@@ -2,7 +2,7 @@
 
 ### Current State (overwrite every session)
 - Date/session: 2026-10-10 session 6
-- Branch / last commit SHA: `v2-semantic` / `ab95a47`
+- Branch / last commit SHA: `v2-semantic` / `372b081`
 - Active phase / task: Phase 1.2 Remediation Complete (L1 ReDoS/latency resolved, Family A reconciled & hardened, human_prompt headline reporting instituted, held-out set protocol confirmed) -> Starting Phase 1.3 Audit-Log Rule Suggester
 - Gate status: G0 [PASS] G1 [IN PROGRESS] G2 [ ] G3 [ ]
 - Test status (command + last result line): `conda run -n airlock-v2 pytest` → `161 passed, 1 skipped in 21.72s` (Full hermetic isolation; zero delta on live audit log; repo hygiene clean)
@@ -32,7 +32,7 @@
   - [x] 3. Metric reporting discipline: Headline reported strictly as `human_prompt` only (~45 -> ~33.6 per 100 commands, saving 11.36 prompts/100 cmds). Legacy 61.8 -> 44.5 deprecated. `scripts/build_traces.py` and `scripts/replay.py` updated with explicit `latency_class` split.
   - [x] 4. Family A hardening: Rejected `--no-index`, required paths inside `workspace_root`, dropped `git remote -v` to prevent token leakage. 29 unit tests pass in `tests/test_policy_engine.py`.
   - [x] 5. Held-out set protocol: Confirmed `private/heldout-redteam.jsonl` will be provided by Ani for a single run at G1 and is kept strictly untouched for development.
-- [ ] Phase 1.3: Audit-log rule suggester
+- [x] Phase 1.3: Audit-log rule suggester (Implemented in `agent_airlock/policy/suggester.py`, `agent_airlock/suggest_rules.py`, and `scripts/suggest_rules.py`; 6 unit tests pass in `tests/test_rule_suggester.py`).
 - [ ] Phase 1.4: Exact-key decision cache
 - [ ] Phase 1.5: L0 grounding checks (SHADOW)
 - [ ] Phase 1.6: ONNX / INT8 quantization & padding mask fix
@@ -53,14 +53,14 @@
 Confidential security analysis recorded in gitignored `private/security-notes.md` per Policy Change Protocol.
 
 ## Next Actions (ordered, max 5; each executable by a fresh agent without extra context)
-1. Phase 1.3: Design and implement the Audit-Log Rule Suggester (`agent_airlock/policy/suggester.py` and `scripts/suggest_rules.py`). Mine recurring human-approved commands from clean audit log, cluster into draft regex templates, enforce trust-root safety invariants, and export human-reviewable `.airlock-policy.yaml` snippets with simulated approval fatigue impact.
-2. Add unit/integration tests for rule suggester (`tests/test_rule_suggester.py`) verifying clustering, anti-evasion filtering, and YAML serialization.
-3. Run rule suggester on clean production corpus (`private/audit.jsonl`), review suggested candidates, and record findings in `docs/v2/`.
-4. Proceed to Phase 1.4: Exact-Key Decision Cache (placed after L2 circuit breaker per architecture contract).
+1. Phase 1.4: Design and implement the Exact-Key Decision Cache (`agent_airlock/cache/decision_cache.py`). Position cache strictly AFTER L2 circuit breaker (R1) so repeated commands cannot bypass loop detection.
+2. Implement cache key hashing (SHA-256 over tool_name, normalized args, cwd, and policy_hash), LRU eviction, TTL, and cache invalidation on policy/trust-root mutations. Invariant: Never cache an ASK as an ALLOW.
+3. Add unit/integration tests for exact-key cache (`tests/test_decision_cache.py`) verifying breaker firing before cache hit, TTL expiration, invalidation on policy modification, and concurrent access safety.
+4. Measure cache hit rate and latency impact on trace replay (`scripts/replay.py`).
 5. Proceed to Phase 1.5: L0 Grounding Checks (shadow mode).
 
 ## Blockers & Questions for Ani
-- None currently (Phase 1.2 condition remediation complete; proceed to Phase 1.3).
+- None currently (Phase 1.2 accepted conditionally and fully remediated; Phase 1.3 complete; proceed to Phase 1.4).
 
 ## Handoff Notes (half-done work, gotchas, commands that need special flags)
 - Active conda environment for v2 development is `airlock-v2`. Never create or modify other environments.
@@ -71,16 +71,16 @@ Confidential security analysis recorded in gitignored `private/security-notes.md
 
 ## Session Log (append-only, newest first)
 ### 2026-10-10 session 6
-- Did: Addressed all 5 review items from Ani's conditional review of Phase 1.2:
+- Did: Addressed all 5 review items from Ani's conditional review of Phase 1.2 and completed Phase 1.3 (Audit-Log Rule Suggester):
   1. Latency & ReDoS profiling/remediation: pinpointed catastrophic backtracking in `deny-fork-bomb` (2326ms -> 0.34ms) and `allow-powershell-readonly` (594ms -> 0.33ms); added length cap before regex scanning (disqualifies >4096 chars from hard-allow; scans head/tail 2048 chars for deny); eliminated unbounded `.*?` and nested quantifiers across destructive FS, pipe, and network regexes. Built `tests/test_policy_perf.py` verifying 9 adversarial long inputs (10k-50k chars) stay strictly below 5.0 ms p99 (all < 4.4 ms p99). Replay pure L1 latency restored to p50=0.631 ms, p95=3.415 ms, p99=7.575 ms (down from 2.5/300/718 ms).
   2. Family A count reconciliation: fully documented reconciliation in decisions.md (ADR-010) and verified-facts.md (F-054): 140 bare `git status` commands were already allowed in v1; 59 prompted read-only git commands occurred in clean corpus. 231 was total read-only git commands matching Family A (227 in human_prompt class, of which 168 were already allowed). True human prompts saved by Family A is 51–59 prompts (~0.8 per 100 commands).
   3. Metric reporting discipline: headline fatigue metric reported strictly as `human_prompt` only (~45 -> ~33.6 per 100 commands, saving 11.36 prompts/100 cmds). Legacy 61.8 -> 44.5 conflated host auto-approvals and is deprecated. Updated `scripts/build_traces.py` and `scripts/replay.py` to calculate and report `latency_class` split (`human_prompt`, `host_auto`, `unapproved`, `v1_allow`, `v1_deny`).
   4. Family A hardening: rejected `--no-index`, required paths inside `workspace_root`, and dropped `git remote -v` from hard-allow to force ASK, preventing URL token exposure. Verified in `tests/test_policy_engine.py` (29 passed).
   5. Held-out set protocol confirmed: `private/heldout-redteam.jsonl` will be provided by Ani for a single run at G1; kept strictly untouched.
-  Full test suite: 161 passed, 1 skipped in 21.72s.
-- Verified: Full hermetic pytest suite passes (161 passed, 1 skipped). Live audit log zero delta. Repo hygiene clean (2/2).
-- Decisions made: ADR-009, ADR-010, ADR-011.
-- Metrics recorded: M-017, M-018, M-019.
+  6. Phase 1.3 Audit-Log Rule Suggester implemented (`agent_airlock/policy/suggester.py`, `agent_airlock/suggest_rules.py`, `scripts/suggest_rules.py`): mines human-approved commands (threshold >= N), strictly anchors patterns (`^...$`), parameterizes known clusters (`npm run <script>`, `pytest`), applies strict safety gate evaluating against all dangerous eval examples and hard-deny rules, attaches repo-controlled code execution warnings (`⚠ executes repo-controlled code`), and exports human-reviewable `.airlock-policy.yaml` snippets without ever auto-writing to policy files (Invariant I4). Tested in `tests/test_rule_suggester.py` (6 passed in 0.07s). Full test suite: 167 passed, 1 skipped in 22.41s.
+- Verified: Full hermetic pytest suite passes (167 passed, 1 skipped). Live audit log zero delta. Repo hygiene clean (2/2).
+- Decisions made: ADR-009, ADR-010, ADR-011, ADR-012.
+- Metrics recorded: M-017, M-018, M-019, M-020, M-021.
 
 ### 2026-10-10 session 5
 - Did: Implemented and validated Rule Families A, B, and C in `agent_airlock/policy/default_rules.py`, `agent_airlock/policy/engine.py`, and `agent_airlock/daemon/router.py` with all Ani amendments.

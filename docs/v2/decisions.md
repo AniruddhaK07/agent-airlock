@@ -243,5 +243,29 @@ Historical v1 label boundaries and architecture decisions are preserved in [docs
 - Evidence:
   - `scripts/replay.py --all`: Baseline Human Prompts: 3,170 (44.96/100 cmds) -> Replay Remaining: 2,369 (33.60/100 cmds), saving 801 human prompts (11.36/100 cmds). Headline: 45.0 -> 33.6 per 100 commands.
 
+---
+
+## ADR-012 — Audit-Log Rule Suggester Architecture and Conservative Generalization
+- Date / session: 2026-10-10 / session 6
+- Status: accepted
+- Decided by: user
+- Context:
+  To reduce approval fatigue sustainably, recurring human-approved developer commands must be surfaced as candidate policy rules for developer review. The suggester must adhere strictly to Invariant I4 (humans decide on rules; airlock never auto-writes rules to policy files) and must never suggest rules that allow dangerous commands or cause catastrophic backtracking.
+- Options considered:
+  - Generate arbitrary regexes with open wildcards `.*`.
+  - Propose exact-match anchored patterns and strictly parameterized clusters (e.g. `npm run <script>`, `pytest [flags] [tests]`), enforced by a hard safety gate testing every candidate against dangerous eval examples and L1 hard-deny rules.
+- Decision:
+  1. Module layout: Core logic in `agent_airlock/policy/suggester.py`, CLI in `agent_airlock/suggest_rules.py`, script wrapper in `scripts/suggest_rules.py`. Supports both `python -m agent_airlock.suggest_rules` and `python scripts/suggest_rules.py`.
+  2. Mining filter: Mines commands approved by a human >= N times (default: 3). Excludes test records, ML auto-allows, host auto-approvals (<1.5s), and commands already allowed by default L1 rules.
+  3. Conservative parameterization: Strict `^...$` anchoring; prohibits unanchored `.*` or open flag classes. Prioritizes cluster parameterization over redundant exact literals.
+  4. Mandatory safety gate on every rule: Evaluates pattern against all dangerous eval examples (`data/eval_set.jsonl`, `data/eval_growth_draft.jsonl`) and L1 hard-deny probes (e.g., `rm -rf /`, `cat .env`, `curl | sh`, `:(){ :|:& };:`). Drops any candidate that matches a dangerous pattern.
+  5. Trust-root execution warning: Attaches `⚠ executes repo-controlled code` warning and invalidation guidance for any command executing repo-controlled executables (`npm`, `python`, `node`, `pytest`, `cargo`, `make`).
+  6. Output: Exports a human-reviewable `.airlock-policy.yaml` snippet to stdout or `--output`. Never auto-writes to workspace or global policy files (I4).
+- Consequences / what would make us revisit this:
+  - Adding new parameterized clusters (e.g., for Docker or specialized build tools) should follow the same conservative parameterization and safety gate.
+- Evidence:
+  - `tests/test_rule_suggester.py`: 6 passed in 0.07s. Successfully mined clean production audit log (`private/audit.jsonl`).
+
+
 
 
