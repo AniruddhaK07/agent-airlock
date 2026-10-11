@@ -73,6 +73,9 @@ class TraceReplayer:
             "circuit_breaker_trips": 0,
             "latencies_ns": [],
             "latency_class_breakdown": {},
+            "latency_class_breakdown_delay_only": {},
+            "latency_class_breakdown_retroactive": {},
+            "latency_class_breakdown_first_match": {},
         }
 
         # Clear workspace state for fresh trace run
@@ -82,10 +85,13 @@ class TraceReplayer:
             sidx = step.get("step_idx", 0)
             tool_name = step.get("tool_name", "")
             tool_args = step.get("tool_args", {})
-            ws_root = step.get("workspace_root") or "C:\\mock\\workspace"
+            ws_root = step.get("workspace_root") or trace_doc.get("workspace_root") or "C:\\mock\\workspace"
             real_outcome = step.get("outcome", "success")
             human_inferred = step.get("human_approved_inferred", False)
             lat_class = step.get("latency_class", "unknown")
+            lc_delay_only = step.get("latency_class_delay_only", lat_class)
+            lc_retroactive = step.get("latency_class_retroactive", lat_class)
+            lc_first_match = step.get("latency_class_first_match", lat_class)
 
             pre_req = {
                 "version": "1.0",
@@ -109,10 +115,16 @@ class TraceReplayer:
             dec = res.get("decision", "ask")
             stats["decisions"][dec] = stats["decisions"].get(dec, 0) + 1
 
-            if lat_class not in stats["latency_class_breakdown"]:
-                stats["latency_class_breakdown"][lat_class] = {"total": 0, "allow": 0, "deny": 0, "ask": 0, "force_ask": 0}
-            stats["latency_class_breakdown"][lat_class]["total"] += 1
-            stats["latency_class_breakdown"][lat_class][dec] = stats["latency_class_breakdown"][lat_class].get(dec, 0) + 1
+            for bk_key, c_val in [
+                ("latency_class_breakdown", lc_first_match),
+                ("latency_class_breakdown_first_match", lc_first_match),
+                ("latency_class_breakdown_delay_only", lc_delay_only),
+                ("latency_class_breakdown_retroactive", lc_retroactive),
+            ]:
+                if c_val not in stats[bk_key]:
+                    stats[bk_key][c_val] = {"total": 0, "allow": 0, "deny": 0, "ask": 0, "force_ask": 0}
+                stats[bk_key][c_val]["total"] += 1
+                stats[bk_key][c_val][dec] = stats[bk_key][c_val].get(dec, 0) + 1
 
             if res.get("circuitBreakerTripped"):
                 stats["circuit_breaker_trips"] += 1
@@ -189,7 +201,9 @@ def main():
     total_allows = 0
     total_denies = 0
     all_latencies = []
-    agg_latency_classes: Dict[str, Dict[str, int]] = {}
+    agg_first_match: Dict[str, Dict[str, int]] = {}
+    agg_delay_only: Dict[str, Dict[str, int]] = {}
+    agg_retroactive: Dict[str, Dict[str, int]] = {}
 
     for tf in trace_files:
         stats = replayer.replay_trace(tf)
@@ -199,58 +213,72 @@ def main():
         total_denies += stats["decisions"].get("deny", 0)
         all_latencies.extend(stats["latencies_ns"])
 
-        for lc, ccounts in stats["latency_class_breakdown"].items():
-            if lc not in agg_latency_classes:
-                agg_latency_classes[lc] = {"total": 0, "allow": 0, "deny": 0, "ask": 0, "force_ask": 0}
-            for k, v in ccounts.items():
-                agg_latency_classes[lc][k] = agg_latency_classes[lc].get(k, 0) + v
+        for agg_dict, stat_key in [
+            (agg_first_match, "latency_class_breakdown_first_match"),
+            (agg_delay_only, "latency_class_breakdown_delay_only"),
+            (agg_retroactive, "latency_class_breakdown_retroactive"),
+        ]:
+            for lc, ccounts in stats[stat_key].items():
+                if lc not in agg_dict:
+                    agg_dict[lc] = {"total": 0, "allow": 0, "deny": 0, "ask": 0, "force_ask": 0}
+                for k, v in ccounts.items():
+                    agg_dict[lc][k] = agg_dict[lc].get(k, 0) + v
 
         cid_short = stats["conversation_id"][:16]
-        fatigue = (stats["decisions"].get("ask", 0) + stats["decisions"].get("force_ask", 0)) / stats["total_steps"] * 100 if stats["total_steps"] else 0
-        hp_stats = stats["latency_class_breakdown"].get("human_prompt", {})
+        hp_stats = stats["latency_class_breakdown_first_match"].get("human_prompt", {})
         hp_asks = hp_stats.get("ask", 0) + hp_stats.get("force_ask", 0)
         hp_fatigue = (hp_asks / stats["total_steps"] * 100) if stats["total_steps"] else 0
-        print(f"[{cid_short}..] {stats['total_steps']:3d} steps | ALLOW: {stats['decisions'].get('allow', 0):3d} | DENY: {stats['decisions'].get('deny', 0):2d} | ASK: {stats['decisions'].get('ask', 0):3d} | Human Prompts: {hp_asks:2d} ({hp_fatigue:4.1f}/100 cmds)")
+        print(f"[{cid_short}..] {stats['total_steps']:3d} steps | ALLOW: {stats['decisions'].get('allow', 0):3d} | DENY: {stats['decisions'].get('deny', 0):2d} | ASK: {stats['decisions'].get('ask', 0):3d} | Human Prompts (mid): {hp_asks:2d} ({hp_fatigue:4.1f}/100 cmds)")
 
     # Aggregate stats
     lat_ms = np.array(all_latencies) / 1e6 if all_latencies else np.array([0.0])
     p50 = float(np.percentile(lat_ms, 50))
     p95 = float(np.percentile(lat_ms, 95))
     p99 = float(np.percentile(lat_ms, 99))
-    overall_fatigue = (total_asks / total_steps * 100) if total_steps else 0.0
 
-    hp_agg = agg_latency_classes.get("human_prompt", {})
-    hp_base = hp_agg.get("total", 0)
-    hp_remaining_asks = hp_agg.get("ask", 0) + hp_agg.get("force_ask", 0)
-    hp_saved = hp_base - hp_remaining_asks
-    hp_base_rate = (hp_base / total_steps * 100) if total_steps else 0.0
-    hp_rem_rate = (hp_remaining_asks / total_steps * 100) if total_steps else 0.0
-    hp_saved_rate = (hp_saved / total_steps * 100) if total_steps else 0.0
+    def calc_metrics(agg_dict: Dict[str, Dict[str, int]]):
+        hp = agg_dict.get("human_prompt", {})
+        base = hp.get("total", 0)
+        rem = hp.get("ask", 0) + hp.get("force_ask", 0)
+        saved = base - rem
+        base_rate = (base / total_steps * 100) if total_steps else 0.0
+        rem_rate = (rem / total_steps * 100) if total_steps else 0.0
+        saved_rate = (saved / total_steps * 100) if total_steps else 0.0
+        return base, rem, saved, base_rate, rem_rate, saved_rate
 
-    ha_agg = agg_latency_classes.get("host_auto", {})
-    ha_base = ha_agg.get("total", 0)
-    ha_remaining_asks = ha_agg.get("ask", 0) + ha_agg.get("force_ask", 0)
-    ha_base_rate = (ha_base / total_steps * 100) if total_steps else 0.0
-    ha_rem_rate = (ha_remaining_asks / total_steps * 100) if total_steps else 0.0
+    lower_base, lower_rem, lower_saved, lower_base_rate, lower_rem_rate, lower_saved_rate = calc_metrics(agg_retroactive)
+    mid_base, mid_rem, mid_saved, mid_base_rate, mid_rem_rate, mid_saved_rate = calc_metrics(agg_first_match)
+    upper_base, upper_rem, upper_saved, upper_base_rate, upper_rem_rate, upper_saved_rate = calc_metrics(agg_delay_only)
 
     print("=" * 80)
-    print("AGGREGATE REPLAY METRICS (Split by latency_class)")
+    print("AGGREGATE REPLAY METRICS")
     print("=" * 80)
     print(f"Total Steps Replayed    : {total_steps}")
     print(f"Total ALLOW             : {total_allows} ({total_allows/total_steps*100:.2f}%)")
     print(f"Total DENY              : {total_denies} ({total_denies/total_steps*100:.2f}%)")
     print(f"Total ASK               : {total_asks} ({total_asks/total_steps*100:.2f}%)")
     print("-" * 80)
-    print("APPROVAL FATIGUE SPLIT:")
-    print(f"  Baseline Human Prompts (1.5-600s) : {hp_base:5d} ({hp_base_rate:5.2f} per 100 commands)")
-    print(f"  -> Replay Human Prompts Remaining : {hp_remaining_asks:5d} ({hp_rem_rate:5.2f} per 100 commands)")
-    print(f"  -> Human Prompts Saved            : {hp_saved:5d} ({hp_saved_rate:5.2f} per 100 commands saved)")
-    print(f"  Baseline Host Auto-Approvals (<1.5s): {ha_base:5d} ({ha_base_rate:5.2f} per 100 commands)")
-    print(f"  -> Replay Host Auto Remaining     : {ha_remaining_asks:5d} ({ha_rem_rate:5.2f} per 100 commands)")
+    print("APPROVAL FATIGUE RANGE REPORT (Human Prompts per 100 commands)")
     print("-" * 80)
-    print(f"HEADLINE APPROVAL FATIGUE (human_prompt only):")
-    print(f"  {hp_base_rate:.1f} -> {hp_rem_rate:.1f} per 100 commands (Saved {hp_saved_rate:.2f} prompts/100 cmds)")
-    print(f"Legacy Raw ASK Rate (conflated, deprecated)  : {overall_fatigue:.2f} ASKs per 100 commands")
+    print(f"1. Retroactive Host-Rule (Lower Bound):")
+    print(f"   Baseline Human Prompts : {lower_base:5d} ({lower_base_rate:5.2f} per 100 commands)")
+    print(f"   Replay Human Prompts   : {lower_rem:5d} ({lower_rem_rate:5.2f} per 100 commands)")
+    print(f"   Human Prompts Saved    : {lower_saved:5d} ({lower_saved_rate:5.2f} per 100 commands saved)")
+    print()
+    print(f"2. First-Match Host-Rule (Middle):")
+    print(f"   Baseline Human Prompts : {mid_base:5d} ({mid_base_rate:5.2f} per 100 commands)")
+    print(f"   Replay Human Prompts   : {mid_rem:5d} ({mid_rem_rate:5.2f} per 100 commands)")
+    print(f"   Human Prompts Saved    : {mid_saved:5d} ({mid_saved_rate:5.2f} per 100 commands saved)")
+    print()
+    print(f"3. Delay-Only Latency >=1.5s (Upper Bound):")
+    print(f"   Baseline Human Prompts : {upper_base:5d} ({upper_base_rate:5.2f} per 100 commands)")
+    print(f"   Replay Human Prompts   : {upper_rem:5d} ({upper_rem_rate:5.2f} per 100 commands)")
+    print(f"   Human Prompts Saved    : {upper_saved:5d} ({upper_saved_rate:5.2f} per 100 commands saved)")
+    print("-" * 80)
+    print("RANGE SUMMARY [Lower, Middle, Upper]:")
+    print(f"  Baseline Human Prompts : [{lower_base_rate:.2f}, {mid_base_rate:.2f}, {upper_base_rate:.2f}] per 100 commands")
+    print(f"  Replay Human Prompts   : [{lower_rem_rate:.2f}, {mid_rem_rate:.2f}, {upper_rem_rate:.2f}] per 100 commands")
+    print(f"  Human Prompts Saved    : [{lower_saved_rate:.2f}, {mid_saved_rate:.2f}, {upper_saved_rate:.2f}] per 100 commands saved")
     print("-" * 80)
     print(f"Decision Latency (ms)   : p50={p50:.3f} ms | p95={p95:.3f} ms | p99={p99:.3f} ms")
 
