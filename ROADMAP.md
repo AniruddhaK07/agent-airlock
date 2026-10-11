@@ -45,3 +45,8 @@ This document tracks prioritized future enhancements and backlog items for Agent
 8. **Audit Log Compression & Cryptographic HMAC Signing**
    - *Description*: Background gzip compression for rotated `.jsonl` audit files with optional HMAC chain verification for tamper-evident compliance logs.
    - *Target Area*: `agent_airlock/audit/logger.py`.
+
+9. **Offline Sentence Embedding Clustering (Post-1.1 Research)**
+   - *Description*: Offline batch clustering of unclassified audit commands using sentence embeddings to guide human rule authoring (strictly offline, never on the live daemon evaluation path).
+   - *Target Area*: `scripts/`, offline analysis tools.
+

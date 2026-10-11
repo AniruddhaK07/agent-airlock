@@ -1,66 +1,57 @@
-# Current Implemented Architecture — Agent Airlock (v1 Baseline)
+# System Architecture — Agent Airlock 1.1
 
-> **Note:** This document describes the **actual currently implemented** architecture of the codebase as verified during Phase 0A orientation, **not** the planned target design for v2.
+> **Product Name:** Agent Airlock 1.1 (Measure, then Optimize)
+> **Branch:** `v2-semantic` (retained until final release prep)
 
 ---
 
-## 1. System Overview
+## 1. System Overview & Target Pipeline
 
-Agent Airlock is a local safety gateway that intercepts AI coding assistant tool calls (`PreToolUse` and `PostToolUse` lifecycle hooks) to gate terminal commands and filesystem modifications. It combines deterministic pattern matching with a local, fine-tuned ModernBERT transformer classifier, backed by strict fail-closed guarantees.
+Agent Airlock 1.1 is a local safety gateway that intercepts AI coding assistant tool calls (`PreToolUse` and `PostToolUse` lifecycle hooks) to gate terminal commands and filesystem modifications.
+
+### Target Pipeline (Evaluation Order)
 
 ```
-Agent Lifecycle Hook (PreToolUse / PostToolUse)
-         │  (ndjson over socket / loopback TCP)
-         ▼
- StubHookClient (agent_airlock/hooks/stub_client.py)
-   - Auto-spawns daemon via FileLock if offline
-   - Fail-closed fallback to 'force_ask' / 'ask' on timeout or error
-         │
-         ▼
- DaemonServer (agent_airlock/daemon/server.py)
-   - Transport: Unix domain socket (AF_UNIX) or localhost TCP
-   - Auth: 32-byte hex bearer token (.jev-daemon.token secured with icacls/chmod)
-   - Multi-tenant state isolation keyed by workspace_root
-         │
-         ▼
- IPCRouter (agent_airlock/daemon/router.py)
-         │
- ┌───────┴────────────────────────────────────────────────────────┐
- │ Layer 1: HardPolicyEngine (agent_airlock/policy/engine.py)     │
- │   - Command Normalizer (anti-evasion: quotes, carets, chaining)│
- │   - Built-in rules (agent_airlock/policy/default_rules.py)     │
- │   - Workspace policy (.airlock-policy.yaml)                    │
- │   ALLOW ──> Return ALLOW                                       │
- │   DENY  ──> Return DENY                                        │
- │   AMBIGUOUS ──> Fall through                                   │
- └───────┬────────────────────────────────────────────────────────┘
-         │
- ┌───────┴────────────────────────────────────────────────────────┐
- │ Layer 2: CircuitBreaker (agent_airlock/circuit_breaker/)       │
- │   - Rolling hash window of recent command/error signatures     │
- │   - Tripped ──> Return FORCE_ASK                               │
- └───────┬────────────────────────────────────────────────────────┘
-         │
- ┌───────┴────────────────────────────────────────────────────────┐
- │ Layer 3: ML Safety Airlock (agent_airlock/backends/)           │
- │   - LocalLayaClient (fine-tuned ModernBERT, 3 task heads)      │
- │   - Evaluator thresholds: conf >= 0.90, blast <= 2.0 -> ALLOW  │
- │                           conf >= 0.85, blast >= 4.0 -> DENY   │
- │   - JevClient HTTP fallback (if TYPESAFE_API_KEY set)          │
- └───────┬────────────────────────────────────────────────────────┘
-         │
- ┌───────┴────────────────────────────────────────────────────────┐
- │ Layer 4: Fail-Closed Fallback                                  │
- │   - Default: ASK operator                                      │
- └────────────────────────────────────────────────────────────────┘
+Agent tool call (run_command / view_file / write_to_file)
+        │
+        ▼
+ L0  Grounding checks (nonexistent binaries/paths/scripts; SHADOW ONLY)
+        │   SHADOW ONLY: logs would-deny / hint to audit metadata; passes through ↓
+        ▼
+ L1  Deterministic policy (rules + AST + anti-evasion + user rules)
+        │   Hard-Allow ──> ALLOW
+        │   Hard-Deny  ──> DENY
+        │   Ambiguous  ──> pass ↓
+        ▼
+ L2  Circuit breaker (hash window; halts failing repetition loops)
+        │   Loop ──> FORCE_ASK
+        │   Normal ──> pass ↓
+        ▼
+ EXACT CACHE  Exact-key decision cache (placed AFTER L2 per R1)
+        │   Key: tool | normalized cmd | cwd | workspace | policy_hash | trust_epoch
+        │   HIT ──> cached decision (never caches ASK as ALLOW)
+        │   MISS ──> pass ↓
+        ▼
+ L3  Calibrated ML classifier (empirically calibrated ModernBERT / compact encoder)
+        │   Confident Safe ──> ALLOW
+        │   High blast     ──> DENY
+        │   Uncertain      ──> pass ↓
+        ▼
+ L4  Fail-Closed Fallback ──> ASK operator
 ```
 
 ---
 
 ## 2. Component Details
 
+### 2.0 L0 Grounding Layer (`agent_airlock/grounding/`)
+- **Status:** **SHADOW ONLY** (enforce mode is strictly disabled).
+- Evaluates prerequisites (C1 binary, C2 files, C3 scripts, C4 packages) in zero-network shadow mode.
+- Records would-deny diagnostic hints in `AuditEvent.metadata["shadow_grounding"]` without altering pipeline flow.
+- **Empirical Scope:** The production census measured only ~12 grounding failures across 2,626 executed commands (<0.5%). L0 makes no claim of reducing hallucinations; it serves purely as an observational diagnostic layer.
+
 ### 2.1 Deterministic Policy Engine (`agent_airlock/policy/`)
-- **`normalizer.py`**: Normalizes shell syntax, strips cosmetic quotes (`r"m"` -> `rm`), removes shell escapes (`^` on Windows, `\` on POSIX), resolves subshell substitutions (`$()`, `` ` ``), and splits compound command chains (`&&`, `;`, `||`, `|`, `&`, `\n`). Any compound chained command or subshell substitution is disqualified from `hard_allow`.
+- **`normalizer.py`**: Normalizes shell syntax, strips cosmetic quotes (`r"m"` -> `rm`), removes shell escapes (`^` on Windows, `\` on POSIX), resolves subshell substitutions (`$()`, `` ` ``), and splits compound command chains. Chaining operators are limited strictly to `;`, `&&`, and newline (`\n`). Compound evaluation rule: a compound command is ALLOW only if every segment is independently ALLOW; any DENY segment immediately yields DENY; any AMBIGUOUS segment yields AMBIGUOUS. Disallowed chaining operators (`||`, single `&`), pipes into native exes, backticks, `$()`, `@()`, and scriptblocks disqualify the command from hard allow (yielding AMBIGUOUS).
 - **`default_rules.py`**: Immutable baseline rules. Hard-denies dangerous operations (`rm -rf /`, fork bombs, reverse shells, raw disk writes, credential reads). Hard-allows safe read-only queries (`git status`, `git diff`, `ls`, `pwd`, etc.).
 - **`engine.py`**: Evaluates normalized commands against rules. Supports workspace overrides via `.airlock-policy.yaml`.
 

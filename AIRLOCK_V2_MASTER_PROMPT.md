@@ -1,5 +1,16 @@
 # Agent Airlock v2 — Master Execution Prompt
 
+> ### AMENDMENT 1: "Agent Airlock 1.1" (Measure, then Optimize) — Accepted 2026-10-10
+> **Owner:** Ani. **Scope:** Applies on top of this master execution prompt. Where this amendment conflicts with the master prompt below, **this amendment wins**.
+> **Product Name:** "Agent Airlock 1.1" in user-facing documentation (branch and directory names retained until release prep).
+> **Target Pipeline:**
+> `L0 grounding -> L1 deterministic policy -> L2 breaker -> exact cache -> L3 calibrated classifier -> L4 fail-closed ASK`
+> **Superseded Sections:**
+> - **Phase 2 (Semantic Similarity / L2.5):** RETIRED as designed. EmbeddingGemma 2 / dense embeddings are not used for hot-path scoring or similarity gating (negative result documented in `docs/v2/embeddings-negative-result.md`).
+> - **Semantic Cache Tier:** RETIRED. Only exact-key decision caching (Phase 1.4) positioned after L2 breaker is retained.
+> - **Approval Memory by Embeddings / L3.5:** RETIRED. No embedding-based approval templates.
+> - **Embedder Daemon Integration & Dual-Process Config:** RETIRED. Focus shifted to empirical calibration of ModernBERT vs compact encoder bake-off (Ettin / CmdCaliper).
+
 > **Audience:** an autonomous coding agent working inside Antigravity.
 > **Owner:** Ani. **Repo:** `AniruddhaK07/agent-airlock`. **Branch:** `v2-semantic`.
 >

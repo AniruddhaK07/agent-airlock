@@ -9,15 +9,15 @@ Every non-trivial technical claim must be logged here with concrete evidence (co
 
 ### Active Development Environment
 - Conda Environment Name: `airlock-v2`
-- Environment Path: `C:\Users\ASUS\miniconda3\envs\airlock-v2`
+- Environment Path: `<CONDA_ROOT>\envs\airlock-v2`
 - Python Version: `3.11.16`
-- Package Installation: `agent-airlock 0.1.0` editable install from `C:\Users\ASUS\Desktop\A\projects\kaizen\agent-airlock-v2`
+- Package Installation: `agent-airlock 0.1.0` editable install from `<WORKSPACE>`
 
 ### Package Manifest (`pip list` in `airlock-v2`)
 ```text
 Package           Version      Editable project location
 ----------------- ------------ --------------------------------------------------------
-agent-airlock     0.1.0        C:\Users\ASUS\Desktop\A\projects\kaizen\agent-airlock-v2
+agent-airlock     0.1.0        <WORKSPACE>
 annotated-doc     0.0.5
 annotated-types   0.8.0
 anyio             4.15.1
@@ -36,7 +36,7 @@ httpx2            2.13.1
 huggingface_hub   1.33.0
 idna              3.20
 iniconfig         2.3.0
-jev-gateway       0.1.0        C:\Users\ASUS\Desktop\A\projects\sva-harness
+jev-gateway       0.1.0        <SVA_HARNESS_DIR>
 Jinja2            3.1.6
 laya              0.3.20
 markdown-it-py    4.2.0
@@ -137,5 +137,13 @@ wheel             0.47.0
 | F-056 | Rule Family A hardening: `git diff --no-index` explicitly rejected; path arguments verified to resolve inside `workspace_root`; `git remote -v` dropped from hard-allow to force ASK (prevents URL token leakage). Verified in `tests/test_policy_engine.py` (29 passed). | VERIFIED | `conda run -n airlock-v2 pytest tests/test_policy_engine.py` | 2026-10-10 |
 | F-057 | Held-out redteam set protocol: `private/heldout-redteam.jsonl` will be provided by Ani for a single run at Gate G1. It is strictly held out, never touched, and never used for rule development. | VERIFIED | Documented per Ani instruction | 2026-10-10 |
 | F-058 | Phase 1.3 Audit-log rule suggester implemented (`agent_airlock/policy/suggester.py`, `agent_airlock/suggest_rules.py`, `scripts/suggest_rules.py`). Successfully mines human approvals with >= N threshold (default 3), strictly anchors patterns (`^...$`), parameterizes known clusters (`npm run <script>`, `pytest [flags] [tests]`), passes every candidate through a mandatory safety gate against dangerous eval examples and L1 hard-deny rules, attaches `⚠ executes repo-controlled code` warnings with invalidation guidance, and exports human-reviewable `.airlock-policy.yaml` snippets without ever auto-writing to policy files (Invariant I4). Verified by `tests/test_rule_suggester.py` (6 passed in 0.07s). | VERIFIED | `conda run -n airlock-v2 pytest tests/test_rule_suggester.py` | 2026-10-10 |
-
+| F-059 | Linear Whole-String Scanning for Oversized Commands (Amendment 1 A.1): Commands > 4096 characters are never allowed at any layer (L1, cache, ML). Deny rules scan the WHOLE string linearly using prefilters (`DENY_RULE_PREFILTERS`). In `router.py`, commands > 4096 chars bypass ML and fail-closed to ASK. Tested with dangerous payloads buried at 3k, 6k, and 12k chars in `tests/test_policy_engine.py` (all denied) and benign oversized returning AMBIGUOUS. | VERIFIED | `conda run -n airlock-v2 pytest tests/test_policy_engine.py` | 2026-10-10 |
+| F-060 | Host Auto-Approval Classification Alignment (Amendment 1 A.2): Any ASKed `run_command` matching a rule in `private/host-allow-rules.txt` is classified as `host_auto` regardless of Pre->Post execution duration. This reclassified 1,853 commands from `human_prompt` to `host_auto` that were auto-approved by Antigravity in < 5 ms but took > 1.5s to execute. True baseline human prompts: 1,113 (15.78/100 cmds). Replay remaining: 609 (8.64/100 cmds). Replay pure L1 latency: p50=0.370 ms, p95=1.845 ms, p99=4.360 ms (< 5.0 ms gate). Headline human fatigue reduction: **15.8 -> 8.6 per 100 commands** (saving 7.15 human prompts per 100 commands, 45.3% fatigue reduction). | VERIFIED | `scripts/build_traces.py` and `scripts/replay.py --all` | 2026-10-10 |
+| F-061 | Rule Suggester Workspace Code Exact-Only & Host Filtering (Amendment 1 A.3): Commands that execute workspace code (`npm/pnpm/yarn run`, `make`, `pytest`, `python <file>`, `cargo`, `node <file>`) emit exact-command regexes only with warning `[WARN] executes repo-controlled code` and invalidation guidance, never wildcard script names. Candidates covered by existing L1 or host allow rules are skipped. Reports estimated human prompts saved. 57 candidates discovered from clean audit log, exported to `private/suggested-rules-report.yaml`. Verified by `tests/test_rule_suggester.py` (8 passed). | VERIFIED | `conda run -n airlock-v2 pytest tests/test_rule_suggester.py` and `scripts/suggest_rules.py` | 2026-10-10 |
+| F-062 | L1 Family Profiling & Latency Breakdown (Amendment 1 A.4): Pure L1 evaluation across all 7,051 trace steps: Family A Git (586 steps): p50=0.079 ms, p99=1.520 ms. Family B PowerShell (558 steps): p50=0.448 ms, p99=2.792 ms. Family C Writes (1,353 steps): p50=1.125 ms, p99=4.844 ms. Overall replay p99 is 4.360 ms (< 5.0 ms gate). Slowest tail commands (> 5 ms) explained: exactly 13 commands are 1,500–4,200 character inline `python -c` scripts scanned linearly across all rules without match. | VERIFIED | `scripts/profile_l1_families.py` on `data/traces/` | 2026-10-10 |
+| F-064 | 3-Way Replay Classification Range (Fix 1): Range [lower: retroactive host-rule, middle: first-match, upper: delay-only >=1.5s]. Baseline Human Prompts: `[15.78, 27.91, 44.96]` per 100 commands. Replay Human Prompts: `[8.64, 20.03, 33.60]` per 100 commands. Human Prompts Saved: `[7.15, 7.89, 11.36]` per 100 commands saved. Replay Latency: p50=0.396 ms, p95=1.820 ms, p99=4.014 ms (PASSES 5.0 ms gate). | VERIFIED | `scripts/replay.py --all` on 41 production traces | 2026-10-10 |
+| F-065 | Prefilter Soundness (Fix 3): Permanent regression test in `tests/test_prefilter_soundness.py` verifies zero differences across deny rules with and without prefilters across eval, draft, train, val, and fuzzed variants (quotes, carets, casing, chaining). Passes in 0.48s. | VERIFIED | `tests/test_prefilter_soundness.py` | 2026-10-10 |
+| F-066 | ML Real Token Length Limit (Fix 4): Maximum untruncated state token length is 451 tokens in `LocalLayaClient`. Any state exceeding 451 tokens fails closed to ASK. Tested with benign head + dangerous tail (3,080 chars < 4096, 457 tokens > 451) failing closed to ASK. | VERIFIED | `tests/test_local_laya.py` | 2026-10-10 |
+| F-067 | Exact-Key Decision Cache (Phase 1.4): Placed strictly after L2 circuit breaker (R1). 6-tuple key `sha256(tool|normalized_cmd|cwd|workspace|policy_hash|trust_epoch)`. Enforces fail-closed on oversized (>4096) and ASK payloads. Added trust-epoch mtime invalidation on manifest writes. Verified repeated failing command still trips breaker before cache (9 tests pass in `tests/test_decision_cache.py`). | VERIFIED | `tests/test_decision_cache.py` | 2026-10-10 |
+| F-068 | L0 Grounding Layer Architecture, Census, and Zero False Positives Gate (Phase 1.5): Evaluated on 41 clean production traces (7,051 steps, 2,626 executed commands). Census measured 279 post-approval failures (10 C1 binary, 0 C2 path, 0 C3 script, 0 C4 install, 269 other runtime errors). Built Checks C1-C4 with `mode: "shadow"` default, zero network calls (I9), conservative pass-through. Evaluated in full `enforce` mode against all 6,945 historically successful commands and tool calls across all 41 clean production traces: **ZERO FALSE POSITIVES** verified. Permanent regression test in `tests/test_grounding_replay.py`. | VERIFIED | `tests/test_grounding_replay.py` and `docs/v2/l0-grounding.md` | 2026-10-10 |
 
