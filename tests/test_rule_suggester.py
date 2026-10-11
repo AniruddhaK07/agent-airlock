@@ -206,5 +206,65 @@ class TestRuleSuggester(unittest.TestCase):
         self.assertEqual(parsed["policy"]["hard_allow"][0]["pattern"], "^pytest\\ -v$")
 
 
+    def test_skip_candidates_covered_by_host_rules(self):
+        """Verifies candidate rules covered by host allow rules are skipped."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            host_file = Path(tmp_dir) / "host-rules.txt"
+            host_file.write_text('{"allow": ["command(npm run)"]}', encoding="utf-8")
+
+            log_path = Path(tmp_dir) / "test_audit.jsonl"
+            records = [
+                {
+                    "event_type": "PreToolUse",
+                    "conversation_id": f"conv-{i}",
+                    "step_idx": i,
+                    "tool_name": "run_command",
+                    "tool_args": {"CommandLine": "npm run build"},
+                    "final_decision": "ask",
+                    "policy_verdict": "ambiguous",
+                    "human_approved": "inferred",
+                    "latency_class": "human_prompt",
+                    "timestamp": f"2026-10-10T01:0{i}:00+00:00",
+                }
+                for i in range(1, 5)
+            ]
+            with open(log_path, "w", encoding="utf-8") as f:
+                for r in records:
+                    f.write(json.dumps(r) + "\n")
+
+            host_aware_suggester = RuleSuggester(
+                policy_engine=self.engine, host_rules_path=host_file
+            )
+            suggestions = host_aware_suggester.mine_audit_log(log_path, min_approvals=3)
+            # Should be skipped because "npm run" covers "npm run build"
+            self.assertEqual(len(suggestions), 0)
+
+    def test_workspace_code_exact_only_with_warning(self):
+        """
+        Verifies that commands executing workspace code (pytest, make, python, etc.)
+        are emitted as exact-command rules only, with the warning tag.
+        """
+        workspace_commands = [
+            "pytest -v tests/test_foo.py",
+            "make build",
+            "cargo test",
+            "python scripts/migrate.py",
+            "node dist/bundle.js",
+        ]
+        for cmd in workspace_commands:
+            with self.subTest(cmd=cmd):
+                self.assertTrue(
+                    RuleSuggester.is_workspace_code_command(cmd),
+                    f"Command '{cmd}' must be identified as executing workspace code"
+                )
+                candidate = self.suggester._create_candidate_rule(cmd, count=5, samples=[cmd])
+                self.assertTrue(candidate.executes_repo_controlled_code)
+                self.assertIn("[WARN] executes repo-controlled code", candidate.invalidation_guidance)
+                # Must be exact match, no wildcards
+                self.assertTrue(candidate.pattern.startswith("^"))
+                self.assertTrue(candidate.pattern.endswith("$"))
+                self.assertNotIn(".*", candidate.pattern)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -707,6 +707,28 @@ asyncio.run(server.run_forever())
         self.assertEqual(event.final_decision, "allow")
         self.assertGreater(event.latency_ms, 0.0)
 
+    async def test_oversized_command_fails_closed_to_ask(self):
+        """
+        Verify that oversized commands (>4096 chars) bypass ML and fail-closed to ASK.
+        """
+        oversized_benign = "git status " + "src/ " * 1000
+        res = await asyncio.to_thread(
+            self.client.check_tool, "run_command", {"CommandLine": oversized_benign}
+        )
+        self.assertEqual(res.get("decision"), "ask")
+        self.assertEqual(res.get("ruleId"), "oversized-command-ask")
+
+    async def test_oversized_command_with_buried_payload_denied(self):
+        """
+        Verify that oversized commands with buried deny payloads are DENIED at daemon layer.
+        """
+        buried_evil = "echo '" + "A" * 3000 + "'; rm -rf /; echo '" + "B" * 2000 + "'"
+        res = await asyncio.to_thread(
+            self.client.check_tool, "run_command", {"CommandLine": buried_evil}
+        )
+        self.assertEqual(res.get("decision"), "deny")
+
+
 if __name__ == "__main__":
     unittest.main()
 
