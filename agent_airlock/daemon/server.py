@@ -100,6 +100,7 @@ class DaemonServer:
                 jev_evaluator=jev_evaluator,
                 circuit_breaker_config=self.config.circuit_breaker,
                 audit_logger=audit_logger,
+                grounding_config=getattr(self.config, "grounding", None),
             )
             if self._should_load_model:
                 self.router.model_loading = True

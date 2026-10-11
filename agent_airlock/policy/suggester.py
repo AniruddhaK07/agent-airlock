@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import shlex
+import warnings
 from collections import defaultdict, Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -40,15 +41,17 @@ class SuggestedRule:
     invalidation_guidance: Optional[str] = None
     safety_passed: bool = True
     rejection_reason: Optional[str] = None
+    prompts_saved: int = 0
 
     def to_yaml_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
             "id": self.id,
-            "description": f"{self.description} (mined from {self.approvals_count} human approvals)",
+            "description": f"{self.description} (estimated {self.prompts_saved or self.approvals_count} human prompts saved)",
             "verdict": "allow",
             "tools": self.tools,
             "field": self.field,
             "pattern": self.pattern,
+            "estimated_human_prompts_saved": self.prompts_saved or self.approvals_count,
         }
         if self.executes_repo_controlled_code:
             d["executes_repo_controlled_code"] = True
@@ -89,11 +92,81 @@ class RuleSuggester:
         self,
         policy_engine: Optional[HardPolicyEngine] = None,
         eval_set_path: Optional[Path] = None,
+        host_rules_path: Optional[Path] = None,
     ):
         self.engine = policy_engine or HardPolicyEngine(get_default_rules())
         self.eval_set_path = eval_set_path or Path("data/eval_set.jsonl")
         self.dangerous_eval_examples: List[Dict[str, Any]] = []
         self._load_dangerous_eval_examples()
+
+        self.host_rules_path = host_rules_path
+        self.host_matchers: List[Tuple[str, Optional[re.Pattern]]] = []
+        if self.host_rules_path and self.host_rules_path.exists():
+            self._load_host_rules()
+
+    def _load_host_rules(self) -> None:
+        """Loads host auto-approval rules to avoid suggesting rules already covered by host."""
+        if not self.host_rules_path.exists():
+            return
+        try:
+            with open(self.host_rules_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            if not content.startswith("{"):
+                content = "{" + content
+            if not content.endswith("}"):
+                content = content + "}"
+            data = json.loads(content)
+            for r in data.get("allow", []):
+                m = re.match(r"^command\((.*)\)$", r.strip())
+                if m:
+                    pat = m.group(1).strip()
+                    creg = None
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", category=FutureWarning)
+                            creg = re.compile(f"^(?:{pat})(?:\\s+.*)?$", re.IGNORECASE)
+                    except Exception:
+                        pass
+                    self.host_matchers.append((pat, creg))
+        except Exception as e:
+            logger.warning("Could not load host allow rules from %s: %s", self.host_rules_path, e)
+
+    def is_covered_by_host_rules(self, cmd: str) -> bool:
+        """Checks if a command is already covered by host auto-allow rules."""
+        cmd_clean = cmd.strip()
+        if not cmd_clean:
+            return False
+        for pat, creg in self.host_matchers:
+            if cmd_clean == pat or cmd_clean.startswith(pat + " "):
+                return True
+            if creg is not None:
+                try:
+                    if creg.match(cmd_clean):
+                        return True
+                except Exception:
+                    pass
+        return False
+
+    @classmethod
+    def is_workspace_code_command(cls, cmd: str) -> bool:
+        """
+        Identifies commands that execute workspace or repository code:
+        npm/pnpm/yarn run, make, pytest, python <file>, cargo, node <file>.
+        """
+        parts = cmd.strip().split()
+        if not parts:
+            return False
+        first = parts[0].lower().replace(".exe", "").replace(".cmd", "")
+        # npm/pnpm/yarn run
+        if first in ("npm", "pnpm", "yarn") and len(parts) >= 2 and parts[1].lower() == "run":
+            return True
+        # make, pytest, cargo
+        if first in ("make", "ninja", "pytest", "cargo"):
+            return True
+        # python <file>, node <file>
+        if first in ("python", "python3", "node", "bun", "deno", "ts-node"):
+            return True
+        return False
 
     def _load_dangerous_eval_examples(self) -> None:
         """Loads dangerous examples from eval set and growth draft for safety gating."""
@@ -238,6 +311,11 @@ class RuleSuggester:
                 # Already allowed by L1 baseline, no suggestion needed
                 continue
 
+            cmd_line = tool_args.get("CommandLine", "") or tool_args.get("command", "") or ""
+            if tool == "run_command" and self.is_covered_by_host_rules(cmd_line):
+                # Already covered by host allow rules, no suggestion needed
+                continue
+
             approved_commands.append((tool, tool_args))
 
         # Group and cluster approved commands
@@ -248,9 +326,11 @@ class RuleSuggester:
         approved_items: List[Tuple[str, Dict[str, Any]]],
         min_approvals: int,
     ) -> List[SuggestedRule]:
-        """Clusters commands and generalizes them into conservative candidate rules."""
-        # Focus on run_command CommandLine
-        cmd_samples: Dict[str, List[str]] = defaultdict(list)
+        """
+        Clusters commands and emits conservative candidate rules.
+        Per Amendment 1: Commands that execute workspace code emit exact-command rules only,
+        with warning, never wildcard script names.
+        """
         exact_counts = Counter()
 
         for tool, args in approved_items:
@@ -259,30 +339,16 @@ class RuleSuggester:
                 cmd = cmd.strip()
                 if cmd:
                     exact_counts[cmd] += 1
-                    tokens = cmd.split()
-                    prefix = tokens[0] if tokens else ""
-                    cmd_samples[prefix].append(cmd)
 
         suggested_rules: List[SuggestedRule] = []
 
-        # 1. Conservative Flag/Subcommand Parameterization
-        parameterized_rules = self._parameterize_clusters(cmd_samples, min_approvals)
-        for pr in parameterized_rules:
-            safe, reason = self.safety_gate(pr)
-            pr.safety_passed = safe
-            pr.rejection_reason = reason
-            if safe:
-                suggested_rules.append(pr)
-
-        compiled_param_rules = [re.compile(r.pattern) for r in suggested_rules if r.safety_passed]
-
-        # 2. Exact Command Suggestions (commands occurring >= min_approvals times not covered by clusters)
+        # Exact Command Suggestions (commands occurring >= min_approvals times)
         for cmd, count in exact_counts.most_common():
             if count < min_approvals:
                 continue
 
-            # Skip if already covered by a parameterized rule
-            if any(cr.search(cmd) for cr in compiled_param_rules):
+            # Skip if already covered by host rules
+            if self.is_covered_by_host_rules(cmd):
                 continue
 
             # Check if command starts with dangerous prefix
@@ -290,7 +356,7 @@ class RuleSuggester:
             if first_tok in self.DANGEROUS_PREFIXES:
                 continue
 
-            # Generate candidate rule
+            # Generate candidate rule (exact-command only)
             candidate = self._create_candidate_rule(cmd, count, [cmd])
             if candidate is None:
                 continue
@@ -328,21 +394,24 @@ class RuleSuggester:
         safe_id_base = re.sub(r"[^a-zA-Z0-9_-]", "-", first_tok).strip("-")
         rule_id = f"custom-allow-{safe_id_base}-{abs(hash(pattern)) % 100000:05d}"
 
-        exec_repo_code = first_tok in self.REPO_EXECUTABLE_PREFIXES
+        exec_repo_code = self.is_workspace_code_command(raw_cmd)
         inv_guidance = None
+        desc = f"Auto-allow exact command '{raw_cmd}'"
         if exec_repo_code:
+            desc = f"Auto-allow exact command '{raw_cmd}' ([WARN] executes repo-controlled code)"
             inv_guidance = (
-                "⚠ executes repo-controlled code: This command executes code within the workspace. "
+                "[WARN] executes repo-controlled code: This command executes code within the workspace. "
                 "Must be re-validated or invalidated when manifest (e.g. package.json, pyproject.toml) or source files change."
             )
 
         return SuggestedRule(
             id=rule_id,
-            description=f"Auto-allow exact command '{raw_cmd}'",
+            description=desc,
             tools=["run_command"],
             field="CommandLine",
             pattern=pattern,
             approvals_count=count,
+            prompts_saved=count,
             sample_commands=samples[:5],
             executes_repo_controlled_code=exec_repo_code,
             invalidation_guidance=inv_guidance,
@@ -353,61 +422,8 @@ class RuleSuggester:
         cmd_samples: Dict[str, List[str]],
         min_approvals: int,
     ) -> List[SuggestedRule]:
-        """
-        Conservatively parameterizes well-known command families
-        (e.g., pytest, npm test, python -m pytest).
-        NEVER uses open .* or open flag classes.
-        """
-        rules: List[SuggestedRule] = []
-
-        # Check npm run scripts
-        npm_cmds = cmd_samples.get("npm", [])
-        npm_scripts = Counter()
-        for cmd in npm_cmds:
-            parts = cmd.split()
-            if len(parts) >= 3 and parts[1] == "run":
-                script_name = parts[2]
-                if re.match(r"^[a-zA-Z0-9_\-:]+$", script_name):
-                    npm_scripts[script_name] += 1
-
-        for script, count in npm_scripts.items():
-            if count >= min_approvals:
-                pattern = f"^npm\\s+run\\s+{re.escape(script)}$"
-                rules.append(
-                    SuggestedRule(
-                        id=f"custom-allow-npm-run-{script}",
-                        description=f"Auto-allow npm run {script}",
-                        tools=["run_command"],
-                        field="CommandLine",
-                        pattern=pattern,
-                        approvals_count=count,
-                        sample_commands=[f"npm run {script}"],
-                        executes_repo_controlled_code=True,
-                        invalidation_guidance="⚠ executes repo-controlled code: Invalidate if package.json changes.",
-                    )
-                )
-
-        # Check pytest invocations
-        pytest_cmds = cmd_samples.get("pytest", [])
-        if len(pytest_cmds) >= min_approvals:
-            # Conservative parameterization: allowed flags (-v, -s, -q) and test path
-            # Strictly anchored, no .*
-            pattern = r"^pytest(?:\s+(?:-v|-s|-q|-k\s+[\w_-]+|tests/[a-zA-Z0-9_./-]+\.py|\.))*$"
-            rules.append(
-                SuggestedRule(
-                    id="custom-allow-pytest-tests",
-                    description="Auto-allow pytest execution for test files",
-                    tools=["run_command"],
-                    field="CommandLine",
-                    pattern=pattern,
-                    approvals_count=len(pytest_cmds),
-                    sample_commands=pytest_cmds[:5],
-                    executes_repo_controlled_code=True,
-                    invalidation_guidance="⚠ executes repo-controlled code: Invalidate if test scripts change.",
-                )
-            )
-
-        return rules
+        """Superseded by Amendment 1: All workspace code commands are exact-only."""
+        return []
 
     def safety_gate(self, rule: SuggestedRule) -> Tuple[bool, Optional[str]]:
         """

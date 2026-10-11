@@ -35,7 +35,7 @@ def get_default_rules() -> List[PolicyRule]:
                 r'-[a-zA-Z]*f[a-zA-Z]*\b\s+--recursive\b|--recursive\b\s+-[a-zA-Z]*f[a-zA-Z]*\b'
                 r')'
                 r'(?>\s+-[a-zA-Z0-9_\-]+)*\s+'
-                r'(?:/(?:[\s*]|$|etc|var|usr|bin|sbin|root|boot|home|opt|dev|sys|proc)|~|\$HOME|\.\./)'
+                r'(?:/(?:[\s*;&|"`\')]|$|etc|var|usr|bin|sbin|root|boot|home|opt|dev|sys|proc)|~|\$HOME|\.\./)'
             ),
         ),
 
@@ -48,7 +48,21 @@ def get_default_rules() -> List[PolicyRule]:
             field="CommandLine",
             pattern=(
                 r'\b(?:rmdir|rd)\s+(?:/[sq]\s+)+[a-z]:\\?|'
-                r'\b(?:remove-item|ri|rm)\s+[^\n\r;]{0,256}?(?:-[rR]ecurse\s+-[fF]orce|-[fF]orce\s+-[rR]ecurse)[^\n\r;]{0,256}?[a-z]:\\?|'
+                r'\b(?:remove-item|ri|rm)\b[^\n\r;]{0,256}?(?:'
+                r'(?:-[rR]ecurse\s+-[fF]orce|-[fF]orce\s+-[rR]ecurse)[^\n\r;]{0,256}?(?:'
+                r'[a-z]:\\?(?:["\'\s;&|]|$)|'
+                r'[a-z]:\\(?:Windows|System32|Program Files|ProgramData|Users\\?(?:["\'\s;&|]|$))|'
+                r'[a-z]:\\[^\\/\r\n;"\'&|]+(?:["\'\s;&|]|$)|'
+                r'\.gemini|'
+                r'\$safeBase\b'
+                r')|'
+                r'(?:'
+                r'[a-z]:\\?(?:["\'\s;&|]|$)|'
+                r'[a-z]:\\(?:Windows|System32|Program Files|ProgramData|Users\\?(?:["\'\s;&|]|$))|'
+                r'[a-z]:\\[^\\/\r\n;"\'&|]+(?:["\'\s;&|]|$)|'
+                r'\.gemini'
+                r')[^\n\r;]{0,256}?(?:-[rR]ecurse\s+-[fF]orce|-[fF]orce\s+-[rR]ecurse)'
+                r')|'
                 r'\bformat\s+[a-z]:|'
                 r'\bdiskpart\b'
             ),
@@ -92,7 +106,30 @@ def get_default_rules() -> List[PolicyRule]:
             ),
         ),
 
-        # 6. Credential and Secret Exposure (Cross-tool: run_command, view_file, write_to_file)
+        # 6. Credential exposure specifically within run_command CommandLine arguments
+        PolicyRule(
+            id="deny-credentials-in-command",
+            description="Commands targeting private keys, credential stores, or environment secret files",
+            verdict=PolicyVerdict.DENY,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'(?:'
+                r'(?:^|[/\\]|\b|\.ssh[/\\])(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?\b|'
+                r'\.aws[/\\](?:credentials|config)|'
+                r'\.kube(?:[/\\]|$)|'
+                r'\.npmrc|\.pypirc|\.netrc|\.pgpass|\.git-credentials|'
+                r'\.docker[/\\]config\.json|'
+                r'\.gemini[/\\](?:oauth|auth|.*token.*)|'
+                r'(?:Google[/\\]+Chrome|Microsoft[/\\]+Edge|Mozilla[/\\]+Firefox|Brave-Browser)[/\\]+User Data|'
+                r'(?:AppData(?![/\\]*(?:Local[/\\]+Temp\b))(?:$|[/\\]+)|%APPDATA%|%LOCALAPPDATA%)|'
+                r'/etc/shadow|/etc/passwd|'
+                r'\.env(?:\.[a-zA-Z0-9_-]+)?(?:\s+|$|["\';])'
+                r')'
+            ),
+        ),
+
+        # 6b. Credential and Secret Exposure (Cross-tool: view_file, write_to_file, replace_file_content, run_command)
         PolicyRule(
             id="deny-credentials-and-secrets",
             description="Access or manipulation of sensitive credential, key, or secret configuration files",
@@ -109,31 +146,8 @@ def get_default_rules() -> List[PolicyRule]:
                 r'(?:^|[/\\])\.docker[/\\]config\.json$|'
                 r'(?:^|[/\\])\.gemini[/\\](?:oauth|auth|.*token.*)|'
                 r'(?:^|[/\\])(?:Google[/\\]Chrome|Microsoft[/\\]Edge|Mozilla[/\\]Firefox|Brave-Browser)[/\\]User Data|'
-                r'(?:^|[/\\])(?:AppData(?:$|[/\\](?!Local[/\\]Temp(?:[/\\]|$)))|%APPDATA%|%LOCALAPPDATA%)|'
+                r'(?:^|[/\\])(?:AppData(?![/\\]*(?:Local[/\\]+Temp\b))(?:$|[/\\]+)|%APPDATA%|%LOCALAPPDATA%)|'
                 r'/etc/(?:shadow|passwd|master\.passwd)'
-                r')'
-            ),
-        ),
-
-        # 6b. Credential exposure specifically within run_command CommandLine arguments
-        PolicyRule(
-            id="deny-credentials-in-command",
-            description="Commands targeting private keys, credential stores, or environment secret files",
-            verdict=PolicyVerdict.DENY,
-            tools=["run_command"],
-            field="CommandLine",
-            pattern=(
-                r'(?:'
-                r'\.ssh[/\\](?:id_rsa|id_ed25519|id_ecdsa|id_dsa)|'
-                r'\.aws[/\\](?:credentials|config)|'
-                r'\.kube(?:[/\\]|$)|'
-                r'\.npmrc|\.pypirc|\.netrc|\.pgpass|\.git-credentials|'
-                r'\.docker[/\\]config\.json|'
-                r'\.gemini[/\\](?:oauth|auth|.*token.*)|'
-                r'(?:Google[/\\]Chrome|Microsoft[/\\]Edge|Mozilla[/\\]Firefox|Brave-Browser)[/\\]User Data|'
-                r'(?:AppData(?:$|[/\\](?!Local[/\\]Temp(?:[/\\]|$)))|%APPDATA%|%LOCALAPPDATA%)|'
-                r'/etc/shadow|/etc/passwd|'
-                r'\.env(?:\.[a-zA-Z0-9_-]+)?(?:\s+|$|["\'])'
                 r')'
             ),
         ),
@@ -221,7 +235,7 @@ def get_default_rules() -> List[PolicyRule]:
             ),
         ),
 
-        # 4. Safe Read-only PowerShell Cmdlets (Rule Family B)
+        # 4. Safe Read-only PowerShell Cmdlets (Rule Family B & D)
         PolicyRule(
             id="allow-powershell-readonly",
             description="Safe read-only PowerShell cmdlets with zero side effects",
@@ -231,10 +245,10 @@ def get_default_rules() -> List[PolicyRule]:
             pattern=(
                 r'^(?:Get-ChildItem|Select-String|Get-Content|Test-Path|Get-Process|Get-Command)'
                 r'(?![^|\r\n]*?(?:-(?:wait)\b|Env:|HKLM:|HKCU:|\\\\|https?://|ftp://|\.\.[/\\]))'
-                r'[^|$(){}\@;&><\`\r\n]*+'
-                r'(?:\s*\|\s*(?:Select-Object|Sort-Object|Measure-Object|Out-String|Format-Table|Format-List|Format-Wide|Format-Custom)'
+                r'[^|$(){}\@;&><\`\r\n]*'
+                r'(?:\s*\|\s*(?:Select-String|Select-Object|Sort-Object|Measure-Object|Out-String|Format-Table|Format-List|Format-Wide|Format-Custom|Where-Object|\?|where)'
                 r'(?![^|\r\n]*?(?:-(?:wait)\b|Env:|HKLM:|HKCU:|\\\\|https?://|ftp://|\.\.[/\\]))'
-                r'[^|$(){}\@;&><\`\r\n]*+)*$'
+                r'[^|;&><\`\r\n]*)*$'
             ),
         ),
 
@@ -246,5 +260,115 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["write_to_file", "replace_file_content"],
             field="TargetFile",
             pattern=r'.*',  # Evaluated with realpath containment and trust-root exclusion ledger in HardPolicyEngine
+        ),
+
+        # =====================================================================
+        # HARD ALLOW RULES: FAMILY D (Policy Change Protocol, I8)
+        # =====================================================================
+
+        # 6. Read-only Git Grep (Family D)
+        PolicyRule(
+            id="allow-git-grep",
+            description="Safe read-only git grep searches within workspace repository",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^git(?:\s+--no-pager)*\s+'
+                r'grep'
+                r'(?:\s+-(?:[inEIwFvhqpzcwLl]|-[a-zA-Z0-9_\-]+|[ABC]\s*\d+))*'
+                r'(?:\s+(?!--no-index\b|-O\b|--open-files-in-pager\b)[^\s;&|`$(){}<>]+)*$'
+            ),
+        ),
+
+        # 7. Safe Windows Binary Lookup (Family D)
+        PolicyRule(
+            id="allow-where-binary-lookup",
+            description="Safe Windows binary location lookup using where or where.exe",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^(?:where|where\.exe)'
+                r'(?:\s+(?!/[rR]\b)[a-zA-Z0-9_\-\.]+)+$'
+            ),
+        ),
+
+        # 8. Safe Windows Directory Listing (Family D)
+        PolicyRule(
+            id="allow-dir-windows",
+            description="Safe Windows directory listing with non-destructive switches",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^dir'
+                r'(?:\s+/[a-zA-Z0-9\-]+)*'
+                r'(?:\s+[a-zA-Z0-9_\-\./\\]+)*$'
+            ),
+        ),
+
+        # 9. Safe Read-only Git Branch Listing (Family D)
+        PolicyRule(
+            id="allow-git-branch-list",
+            description="Safe read-only git branch listing and current branch inspection",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^git'
+                r'(?:\s+(?:--no-pager|(?-i:-C)\s+[^\s;&|`$(){}<>]+))*\s+'
+                r'branch'
+                r'(?:\s+(?:-[ravl]+|--show-current|--list(?:\s+[a-zA-Z0-9_\-\./*]+)?))*$'
+            ),
+        ),
+
+        # 10. Safe Read-only Git Tag Listing (Family D)
+        PolicyRule(
+            id="allow-git-tag-list",
+            description="Safe read-only git tag listing",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^git'
+                r'(?:\s+(?:--no-pager|(?-i:-C)\s+[^\s;&|`$(){}<>]+))*\s+'
+                r'tag'
+                r'(?:\s+(?:-l|--list)(?:\s+["\']?[a-zA-Z0-9_\-\./*]+["\']?)?)?$'
+            ),
+        ),
+
+        # 11. Safe Git Add Workspace Paths (Family D - Conditional)
+        PolicyRule(
+            id="allow-git-add-workspace",
+            description="Safe git staging strictly contained within workspace, excluding dotfiles and secrets",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^git'
+                r'(?:\s+(?:--no-pager|(?-i:-C)\s+[^\s;&|`$(){}<>]+))*\s+'
+                r'add'
+                r'(?:\s+-(?:v|n|-(?:verbose|dry-run)))*'
+                r'(?:\s+(?!--patch\b|-p\b|--interactive\b|-i\b|-f\b|--force\b|-A\b|--all\b|-u\b|--update\b|\.(?:\s|$)|[^\s;&|`$(){}<>]*[*?\[\]]|:\()[^\s;&|`$(){}<>]+)+$'
+            ),
+        ),
+
+        # 12. Safe Local Git Tag Creation (Family D - Conditional)
+        PolicyRule(
+            id="allow-git-tag-local",
+            description="Safe local git tag creation without remote push",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^git'
+                r'(?:\s+(?:--no-pager|(?-i:-C)\s+[^\s;&|`$(){}<>]+))*\s+'
+                r'tag'
+                r'(?:\s+(?!--sign\b|-s\b|-u\b|--local-user\b)(?:-a|--annotate))?'
+                r'(?:\s+[a-zA-Z0-9_\-\.]+)?'
+                r'(?:\s+-m\s+(?:(?:"[^"\r\n]*"|\'[^\'\r\n]*\')|[a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+)*))?'
+                r'(?:\s+[a-zA-Z0-9_\-\.]+)?$'
+            ),
         ),
     ]

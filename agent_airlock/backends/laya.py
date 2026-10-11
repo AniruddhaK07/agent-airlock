@@ -130,12 +130,51 @@ class LocalLayaClient:
         # Construct input state
         if tool_name == "run_command":
             cmd = tool_args.get("CommandLine", "")
+            if len(cmd) > 4096:
+                return JevEvaluation(
+                    score_blast_radius=3.0,
+                    score_confidence=1.0,
+                    noul_reversible_prob=0.0,
+                    choice_route=ChoiceRoute.NEEDS_HUMAN.value,
+                    choice_confidence=1.0,
+                    raw_payload={"reason": "Oversized command (>4096 chars); truncated classification disallowed."},
+                )
             state = {"tool": "run_command", "command": cmd}
         elif tool_name in ("view_file", "write_to_file", "replace_file_content"):
             target = tool_args.get("AbsolutePath") or tool_args.get("TargetFile") or ""
             state = {"tool": tool_name, "path": target}
         else:
             state = {"tool": tool_name, **tool_args}
+
+        # Token length limit guard (Amendment 1 A.4):
+        # ModernBERT has max_len=512; question prefixes consume up to 61 tokens.
+        # Any state exceeding MAX_STATE_TOKENS (451 tokens) is truncated by build_sequence,
+        # which would evaluate only the truncated head. Fail-closed to ASK.
+        MAX_STATE_TOKENS = 451
+        if hasattr(self.agent, "tok") and self.agent.tok is not None:
+            try:
+                from laya.common import serialize_state
+                ser_state = serialize_state(state).replace(self.agent.tok.mask_token, " ")
+                token_count = len(self.agent.tok(ser_state, add_special_tokens=False)["input_ids"])
+                if token_count > MAX_STATE_TOKENS:
+                    logger.warning(
+                        "Command state token length (%d) exceeds max untruncated budget (%d); failing closed to ASK.",
+                        token_count, MAX_STATE_TOKENS
+                    )
+                    return JevEvaluation(
+                        score_blast_radius=3.0,
+                        score_confidence=1.0,
+                        noul_reversible_prob=0.0,
+                        choice_route=ChoiceRoute.NEEDS_HUMAN.value,
+                        choice_confidence=1.0,
+                        raw_payload={
+                            "reason": f"Command state token length ({token_count}) exceeds model untruncated budget ({MAX_STATE_TOKENS}); truncated classification disallowed.",
+                            "token_count": token_count,
+                            "max_state_tokens": MAX_STATE_TOKENS,
+                        },
+                    )
+            except Exception as e:
+                logger.debug("Token length check failed (%s); proceeding to predict", e)
 
         try:
             t0 = time.time()

@@ -33,6 +33,12 @@ def main():
         help="Path to evaluation set for safety gate (default: data/eval_set.jsonl)",
     )
     parser.add_argument(
+        "--host-rules",
+        type=str,
+        default="private/host-allow-rules.txt",
+        help="Path to host allow rules file (default: private/host-allow-rules.txt)",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         help="Optional path to write generated YAML snippet to (never writes to .airlock-policy.yaml directly)",
@@ -54,12 +60,20 @@ def main():
             sys.exit(1)
 
     eval_path = Path(args.eval_set) if args.eval_set else None
+    host_path = Path(args.host_rules) if args.host_rules else None
 
     print(f"Mining audit log '{audit_path}' for human-approved commands (min approvals: {args.min_approvals})...")
-    suggester = RuleSuggester(eval_set_path=eval_path)
+    suggester = RuleSuggester(eval_set_path=eval_path, host_rules_path=host_path)
     suggestions = suggester.mine_audit_log(audit_path=audit_path, min_approvals=args.min_approvals)
 
-    print(f"Discovered {len(suggestions)} safe candidate rule(s).")
+    print(f"\nDiscovered {len(suggestions)} safe candidate rule(s):")
+    if suggestions:
+        print(f"{'Rule ID':<35} | {'Saved':<6} | {'Warning':<25} | Pattern")
+        print("-" * 105)
+        for s in suggestions:
+            warning_tag = "[WARN] repo code" if s.executes_repo_controlled_code else "safe"
+            saved_cnt = s.prompts_saved or s.approvals_count
+            print(f"{s.id:<35} | {saved_cnt:<6} | {warning_tag:<25} | {s.pattern}")
 
     if args.json:
         data = [s.to_yaml_dict() for s in suggestions]

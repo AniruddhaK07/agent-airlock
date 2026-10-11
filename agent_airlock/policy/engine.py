@@ -4,8 +4,9 @@ Hard Policy Engine: Deterministic rule engine for Antigravity CLI tool gating.
 
 import os
 import re
+import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from agent_airlock.policy.models import PolicyVerdict, PolicyRule, PolicyResult
 from agent_airlock.policy.default_rules import get_default_rules
 from agent_airlock.policy.normalizer import (
@@ -32,6 +33,9 @@ DISALLOWED_DIRS_WORKSPACE_WRITE = {
     ".vscode", ".github", ".husky", ".agents", ".git", ".ssh", ".aws", ".kube", ".gemini", "agent_airlock"
 }
 
+_REALPATH_CACHE: Dict[Tuple[str, str, bool], Tuple[bool, float]] = {}
+_CACHE_TTL: float = 2.0
+
 class HardPolicyEngine:
     """
     Deterministic rule engine running before Jev.
@@ -39,10 +43,11 @@ class HardPolicyEngine:
     Guarantees zero false negatives on hard-deny rules.
     """
 
-    def __init__(self, rules: Optional[List[PolicyRule]] = None):
+    def __init__(self, rules: Optional[List[PolicyRule]] = None, use_prefilters: bool = True):
         if rules is None:
             rules = get_default_rules()
         self.rules = rules
+        self.use_prefilters = use_prefilters
         self._deny_rules: List[PolicyRule] = [r for r in rules if r.verdict == PolicyVerdict.DENY]
         self._allow_rules: List[PolicyRule] = [r for r in rules if r.verdict == PolicyVerdict.ALLOW]
         import hashlib
@@ -134,10 +139,43 @@ class HardPolicyEngine:
 
         return None
 
+    DENY_RULE_PREFILTERS = {
+        "deny-destructive-fs-posix": lambda cmd, lower: "rm" in lower,
+        "deny-destructive-fs-windows": lambda cmd, lower: any(k in lower for k in ("rmdir", "rd", "remove-item", "ri", "rm", "format", "diskpart")),
+        "deny-disk-wipe": lambda cmd, lower: "dd" in lower or "mkfs" in lower,
+        "deny-pipe-to-shell-posix": lambda cmd, lower: "|" in cmd,
+        "deny-pipe-to-shell-windows": lambda cmd, lower: "|" in cmd,
+        "deny-credentials-in-command": lambda cmd, lower: any(k in lower for k in (".ssh", ".aws", ".kube", ".npmrc", ".pypirc", ".netrc", ".pgpass", ".git-credentials", ".docker", ".gemini", "chrome", "edge", "firefox", "brave", "appdata", "%appdata%", "%localappdata%", "shadow", "passwd", ".env", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")),
+        "deny-credentials-and-secrets": lambda cmd, lower: any(k in lower for k in (".ssh", ".aws", ".kube", ".npmrc", ".pypirc", ".netrc", ".pgpass", ".git-credentials", ".docker", ".gemini", "chrome", "edge", "firefox", "brave", "appdata", "%appdata%", "%localappdata%", "shadow", "passwd", ".env", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")),
+        "deny-network-exfil-reverse-shell": lambda cmd, lower: any(k in lower for k in ("nc", "socat", "/dev/tcp", "/dev/udp", "pty.spawn", "socket")),
+        "deny-fork-bomb": lambda cmd, lower: any(k in cmd for k in (":()", ": (", "while", "()", "{")),
+    }
+
+    @staticmethod
+    def _is_inline_script(raw_cmd: str) -> bool:
+        """
+        Detects inline interpreter execution (python -c, node -e, etc.).
+        Since no L1 rule ever allows inline script execution, safe commands
+        that pass all hard-deny checks can short-circuit directly to AMBIGUOUS.
+        """
+        cmd = raw_cmd.strip().lower()
+        if not any(k in cmd for k in ("python", "node", "perl", "ruby")):
+            return False
+
+        patterns = [
+            r"(?:^|[\r\n;&|])(?:\s*#.*[\r\n]+)*\s*(?:&?\s*[\"']?[^\"'\r\n]*?[\\/])?python(?:[23]|\.exe)?[\"']?\s+(?:-w\s+\S+\s+)?-c\b",
+            r"(?:^|[\r\n;&|])(?:\s*#.*[\r\n]+)*\s*(?:&?\s*[\"']?[^\"'\r\n]*?[\\/])?node(?:\.exe)?[\"']?\s+(?:-e|--eval)\b",
+            r"(?:^|[\r\n;&|])(?:\s*#.*[\r\n]+)*\s*(?:&?\s*[\"']?[^\"'\r\n]*?[\\/])?perl(?:\.exe)?[\"']?\s+-e\b",
+            r"(?:^|[\r\n;&|])(?:\s*#.*[\r\n]+)*\s*(?:&?\s*[\"']?[^\"'\r\n]*?[\\/])?ruby(?:\.exe)?[\"']?\s+-e\b",
+        ]
+        cleaned = re.sub(r'[\'"]', '', cmd)
+        return any(bool(re.search(p, cmd, re.IGNORECASE)) or bool(re.search(p, cleaned, re.IGNORECASE)) for p in patterns)
+
     def _evaluate_run_command(
         self, tool_args: Dict[str, Any], workspace_root: Optional[str] = None
     ) -> PolicyResult:
-        raw_cmd = tool_args.get("CommandLine", "").strip()
+        raw_arg = tool_args.get("CommandLine", "")
+        raw_cmd = raw_arg.strip()
         if not raw_cmd:
             return PolicyResult(
                 verdict=PolicyVerdict.ALLOW,
@@ -145,21 +183,27 @@ class HardPolicyEngine:
             )
 
         # Length cap: legitimate hard-allow commands are <= 4096 chars.
-        if len(raw_cmd) > 4096:
-            scan_targets = [raw_cmd[:2048], raw_cmd[-2048:]]
+        # An oversized command (>4096 chars) must NEVER be ALLOW at any layer.
+        if len(raw_arg) > 4096 or len(raw_cmd) > 4096:
+            raw_cmd_lower = raw_cmd.lower()
+            norm_lower = normalize_command(raw_cmd).lower()
             for rule in self._deny_rules:
                 if self._rule_applies_to_tool(rule, "run_command"):
-                    for target in scan_targets:
-                        if rule.compiled.search(target):
-                            return PolicyResult(
-                                verdict=PolicyVerdict.DENY,
-                                rule_id=rule.id,
-                                reason=f"Hard Deny: {rule.description}",
-                                matched_pattern=rule.pattern,
-                            )
+                    if self.use_prefilters:
+                        prefilter = self.DENY_RULE_PREFILTERS.get(rule.id)
+                        if prefilter and not (prefilter(raw_cmd, raw_cmd_lower) or prefilter(norm_lower, norm_lower)):
+                            continue
+                    if rule.compiled.search(raw_cmd) or rule.compiled.search(norm_lower):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.DENY,
+                            rule_id=rule.id,
+                            reason=f"Hard Deny: {rule.description}",
+                            matched_pattern=rule.pattern,
+                        )
+
             return PolicyResult(
                 verdict=PolicyVerdict.AMBIGUOUS,
-                reason="Command length exceeds 4096 characters; disqualified from hard-allow, falls through to ML/human.",
+                reason="Command length exceeds 4096 characters; disqualified from hard-allow, falls through to fail-closed ASK.",
             )
 
         # Primary tokenization using shlex
@@ -181,14 +225,16 @@ class HardPolicyEngine:
             candidates_to_check.add(sc)
             candidates_to_check.add(normalize_command(sc))
             candidates_to_check.add(strip_all_quotes(normalize_command(sc)))
-            sc_tokens, _ = tokenize_command(sc)
-            if sc_tokens:
-                candidates_to_check.add(" ".join(sc_tokens))
+            if len(sc) < 512:
+                sc_tokens, _ = tokenize_command(sc)
+                if sc_tokens:
+                    candidates_to_check.add(" ".join(sc_tokens))
 
         # Extract unwrapped subshell and encoded command payloads
         unwrapped_payloads = extract_subshell_and_encoded_payloads(raw_cmd)
         for sc in sub_cmds:
-            unwrapped_payloads.extend(extract_subshell_and_encoded_payloads(sc))
+            if len(sc) < 1024:
+                unwrapped_payloads.extend(extract_subshell_and_encoded_payloads(sc))
 
         if unwrapped_payloads:
             # Subshell wrappers and encoded commands are disqualified from hard-allow
@@ -198,9 +244,10 @@ class HardPolicyEngine:
             candidates_to_check.add(p)
             candidates_to_check.add(normalize_command(p))
             candidates_to_check.add(strip_all_quotes(normalize_command(p)))
-            p_tokens, _ = tokenize_command(p)
-            if p_tokens:
-                candidates_to_check.add(" ".join(p_tokens))
+            if len(p) < 512:
+                p_tokens, _ = tokenize_command(p)
+                if p_tokens:
+                    candidates_to_check.add(" ".join(p_tokens))
             for p_sub in split_command_chain(p):
                 candidates_to_check.add(p_sub)
                 candidates_to_check.add(normalize_command(p_sub))
@@ -214,6 +261,11 @@ class HardPolicyEngine:
         for rule in self._deny_rules:
             if not self._rule_applies_to_tool(rule, "run_command"):
                 continue
+
+            if self.use_prefilters:
+                prefilter = self.DENY_RULE_PREFILTERS.get(rule.id)
+                if prefilter and not any(prefilter(cand, cand.lower()) for cand in candidates_to_check if cand):
+                    continue
 
             for candidate in candidates_to_check:
                 if not candidate:
@@ -241,31 +293,104 @@ class HardPolicyEngine:
             )
 
         # -------------------------------------------------------------
-        # STEP 2: Hard Allow Evaluation (Strictly side-effect free)
+        # STEP 1.6: Inline Script Short-Circuit
+        # Inline script interpreters (python -c, node -e, ruby -e, perl -e)
+        # are never permitted in L1 hard-allow (Invariant: no L1 allow executes workspace code).
+        # Once all hard-deny checks have passed cleanly, early-exit to AMBIGUOUS.
         # -------------------------------------------------------------
-        # Chained commands or subshells are NEVER permitted in Hard Allow,
-        # with the sole exception of safe PowerShell pipelines matching allow-powershell-readonly.
-        has_dangerous_chaining = bool(re.search(r';|&&|\|\||&|\n|\r|\$\(.*?\)|`.*?`', raw_cmd))
-        if has_dangerous_chaining:
+        if self._is_inline_script(raw_cmd):
             return PolicyResult(
                 verdict=PolicyVerdict.AMBIGUOUS,
-                reason="Command chaining or subshell substitution detected; falls through to Laya.",
+                rule_id="inline-script-execution",
+                reason="Inline script execution (-c/-e) cannot be statically verified as safe; falls through to ML/human approval after clean deny scan.",
+                is_chained=is_chained,
+            )
+
+        # -------------------------------------------------------------
+        # STEP 2: Hard Allow Evaluation (Family A, B, C, D)
+        # -------------------------------------------------------------
+        # Reject file redirection in allow evaluation (> or >>, unless 2>&1)
+        # Strip scrubber placeholders like <USER>, <PATH> before checking redirection
+        clean_for_redirect = re.sub(r'<[A-Za-z0-9_\-]+>', '', raw_cmd)
+        if re.search(r'(?<!2)>|\b>\b|>>', clean_for_redirect):
+            return PolicyResult(
+                verdict=PolicyVerdict.AMBIGUOUS,
+                rule_id="redirection-disallowed-in-allow",
+                reason="File redirection (>, >>) detected; requires human confirmation.",
+            )
+
+        # Reject dangerous constructs that cannot be statically proven safe in L1:
+        # ||, single &, backticks, $(...), @(...), ForEach-Object / %
+        if re.search(r'\|\||(?<!&)&(?![&>])|`|\$\(|\@\(|\b(?:ForEach-Object|foreach)\b|\|\s*%', raw_cmd, re.IGNORECASE):
+            return PolicyResult(
+                verdict=PolicyVerdict.AMBIGUOUS,
+                rule_id="dangerous-construct-requires-confirmation",
+                reason="Subshell, background execution, array subexpression, conditional OR, backticks, or ForEach-Object detected; requires human confirmation.",
                 is_chained=True,
             )
+
+        # Validate pipeline stages against strict sink allowlist (Item 2)
+        if self._has_unquoted_pipe(raw_cmd):
+            pipe_res = self._validate_pipeline_stages(raw_cmd)
+            if pipe_res is not None:
+                return pipe_res
+
+        # PowerShell if-construct evaluation ("if condition and all branch bodies are independently allowed")
+        if re.match(r'^\s*if\s*\(', raw_cmd, re.IGNORECASE):
+            if_res = self._evaluate_if_block(raw_cmd, workspace_root=workspace_root)
+            if if_res is not None:
+                return if_res
+
+        # Family D: Compound command evaluation ("compound only if every segment is allowed")
+        # Chaining operators strictly limited to ; && newline.
+        # Any DENY segment -> DENY; any AMBIGUOUS segment -> AMBIGUOUS; compound is ALLOW only if all ALLOW.
+        has_compound_chaining = bool(re.search(r';|&&|\n|\r', raw_cmd))
+        if has_compound_chaining:
+            segments = [s.strip() for s in self._split_top_level_chain(raw_cmd) if s.strip()]
+            if len(segments) > 1:
+                first_ambiguous = None
+                for seg in segments:
+                    seg_res = self._evaluate_run_command({"CommandLine": seg}, workspace_root=workspace_root)
+                    if seg_res.verdict == PolicyVerdict.DENY:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.DENY,
+                            rule_id=seg_res.rule_id,
+                            reason=f"Hard Deny: Chained command segment failed: {seg_res.reason}",
+                            matched_pattern=seg_res.matched_pattern,
+                            is_chained=True,
+                        )
+                    if seg_res.verdict != PolicyVerdict.ALLOW and first_ambiguous is None:
+                        first_ambiguous = PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id=seg_res.rule_id or "chained-segment-ambiguous",
+                            reason=f"Compound segment '{seg}' requires human confirmation ({seg_res.reason}).",
+                            is_chained=True,
+                        )
+                if first_ambiguous is not None:
+                    return first_ambiguous
+                return PolicyResult(
+                    verdict=PolicyVerdict.ALLOW,
+                    rule_id="allow-compound-chain",
+                    reason="Hard Allow: Compound command where every segment is verified safe by L1.",
+                    is_chained=True,
+                )
+
+        clean_scrubbed_cmd = re.sub(r'<[A-Za-z0-9_\-]+>', '_SCRUBBED_', raw_cmd)
+        clean_norm_cmd = re.sub(r'<[A-Za-z0-9_\-]+>', '_SCRUBBED_', norm_cmd)
 
         for rule in self._allow_rules:
             if not self._rule_applies_to_tool(rule, "run_command"):
                 continue
 
             # If the command contains pipes, ONLY allow-powershell-readonly is permitted to evaluate it
-            if "|" in raw_cmd and rule.id != "allow-powershell-readonly":
+            if self._has_unquoted_pipe(raw_cmd) and rule.id != "allow-powershell-readonly":
                 continue
 
-            # For allow-powershell-readonly, match against norm_cmd to preserve Windows backslashes
-            target_to_match = norm_cmd if rule.id == "allow-powershell-readonly" else (shlex_cmd or norm_cmd)
+            # For allow-powershell-readonly, mask quoted pipes so regex matches argument literals without misinterpreting shell sinks
+            target_to_match = self._mask_pipes_in_quotes(clean_scrubbed_cmd) if rule.id == "allow-powershell-readonly" else (clean_scrubbed_cmd if shlex_cmd else clean_norm_cmd)
             if rule.compiled.search(target_to_match):
                 # Extra check: make sure the command does not touch secret files
-                if self._touches_credentials(target_to_match) or self._touches_credentials(norm_cmd) or self._touches_credentials(raw_cmd):
+                if self._touches_credentials(target_to_match) or self._touches_credentials(clean_norm_cmd) or self._touches_credentials(raw_cmd):
                     return PolicyResult(
                         verdict=PolicyVerdict.DENY,
                         rule_id="deny-credentials-in-command",
@@ -273,14 +398,33 @@ class HardPolicyEngine:
                         matched_pattern=rule.pattern,
                     )
 
-                # Family A guard: Git rules require workspace containment, reject --no-index, and reject sensitive URLs
-                if rule.id == "allow-git-status-diff-log":
+                # Family A & D guard: Git inspection rules require workspace containment, reject --no-index, and reject sensitive URLs
+                if rule.id in ("allow-git-status-diff-log", "allow-git-grep"):
                     if "--no-index" in raw_cmd.lower():
                         return PolicyResult(
                             verdict=PolicyVerdict.AMBIGUOUS,
                             rule_id="git-no-index-disallowed",
                             reason="Git --no-index accesses arbitrary filesystem paths; requires human confirmation.",
                         )
+
+                    # Item 3: git grep reject -O/--open-files-in-pager, and git -c/-C/--paginate/--exec-path before subcommand
+                    if rule.id == "allow-git-grep":
+                        if re.search(r'-(?:O\b|-(?:open-files-in-pager)\b)', raw_cmd):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="git-grep-pager-disallowed",
+                                reason="Git grep with pager execution (-O/--open-files-in-pager) requires human confirmation.",
+                            )
+                        # Reject prefix flags -c, -C, --paginate, --exec-path before grep subcommand
+                        prefix_match = re.search(r'^git\s+(.*?)\bgrep\b', raw_cmd, re.IGNORECASE)
+                        if prefix_match:
+                            prefix_str = prefix_match.group(1)
+                            if re.search(r'(?:-(?:[cC]|-(?:paginate|exec-path))\b)', prefix_str):
+                                return PolicyResult(
+                                    verdict=PolicyVerdict.AMBIGUOUS,
+                                    rule_id="git-global-prefix-disallowed",
+                                    reason="Git prefix flags (-c, -C, --paginate, --exec-path) before subcommand require human confirmation.",
+                                )
 
                     # Validate all path arguments resolve inside workspace_root
                     tokens_to_check = raw_cmd.split()
@@ -319,9 +463,112 @@ class HardPolicyEngine:
                                         reason=f"Git path '{target_p}' is outside workspace root; falls through to human confirmation.",
                                     )
 
-                # Family B guard: PowerShell paths must resolve inside workspace_root
+                # Family D guard: git branch list must not delete or rename branches
+                if rule.id == "allow-git-branch-list":
+                    if re.search(r'-[dD]\b|--delete\b', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-branch-delete-requires-confirmation",
+                            reason="Git branch deletion requires human confirmation.",
+                        )
+                    if re.search(r'-[mM]\b|--move\b', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-branch-rename-requires-confirmation",
+                            reason="Git branch rename requires human confirmation.",
+                        )
+
+                # Family D guard: git tag list / local must not delete or push tags
+                if rule.id in ("allow-git-tag-list", "allow-git-tag-local"):
+                    if re.search(r'-d\b|--delete\b', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-tag-delete-requires-confirmation",
+                            reason="Git tag deletion requires human confirmation.",
+                        )
+                    # Item 3: git tag reject -s/-u/--sign
+                    if re.search(r'-(?:s\b|u\b|-(?:sign|local-user)\b)', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-tag-sign-requires-confirmation",
+                            reason="Git signed tags require human confirmation.",
+                        )
+                    if rule.id == "allow-git-tag-local" and "push" in raw_cmd.lower():
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-tag-push-requires-confirmation",
+                            reason="Git tag creation chained with push requires human confirmation.",
+                        )
+
+                # Family D guard: git add workspace paths
+                if rule.id == "allow-git-add-workspace":
+                    # Item 3: reject -f/--force, '.', -A/--all, -u, globs, pathspec magic ':(', only explicit workspace paths pass
+                    if re.search(r'-(?:p|i|f|A|u)\b|--(?:patch|interactive|force|all|update)\b|\b\.(?:\s|$)|[*?\[\]]|:\(', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-add-flags-or-globs-disallowed",
+                            reason="Git add with bulk flags (-A, -u, -f, .), globs, or pathspec magic requires human confirmation; only explicit workspace paths permitted.",
+                        )
+                    add_tokens = raw_cmd.split()[1:]
+                    for tok in add_tokens:
+                        if tok.startswith("-"):
+                            continue
+                        clean_tok = tok.strip("'\"")
+                        if not clean_tok:
+                            continue
+                        # Reject secret files and sensitive dotfiles
+                        clean_lower = clean_tok.lower().replace("\\", "/").split("/")[-1]
+                        if clean_lower in (".env", ".git-credentials", "id_rsa", "credentials") or clean_lower.startswith((".env.", ".ssh", ".aws")):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.DENY,
+                                rule_id="deny-credentials-in-command",
+                                reason=f"Hard Deny: Git add cannot stage secret dotfile '{clean_tok}'.",
+                            )
+                        if not self._is_path_contained_in_workspace(clean_tok, workspace_root):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="git-add-external-path",
+                                reason=f"Git add path '{clean_tok}' is outside workspace root; requires human confirmation.",
+                            )
+
+                # Family D guard: where / where.exe lookup
+                if rule.id == "allow-where-binary-lookup":
+                    if re.search(r'/[rR]\b', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="where-recursive-disallowed",
+                            reason="Where /r recursive traversal requires human confirmation.",
+                        )
+                    if self._touches_credentials(raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.DENY,
+                            rule_id="deny-credentials-in-command",
+                            reason="Hard Deny: Command searches for secret credential file.",
+                        )
+
+                # Family D guard: Windows dir listing
+                if rule.id == "allow-dir-windows":
+                    if "/s" in raw_cmd.lower() and re.search(r'\b[A-Za-z]:\\(?:\s|$)|^\s*dir\s+/s(?:\s*$|\s+[A-Za-z]:\\)', raw_cmd, re.I):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="dir-root-traversal-disallowed",
+                            reason="Dir /s starting from system drive root requires human confirmation.",
+                        )
+                    dir_tokens = raw_cmd.split()[1:]
+                    for tok in dir_tokens:
+                        if tok.startswith("/"):
+                            continue
+                        clean_tok = tok.strip("'\"")
+                        if clean_tok and not self._is_path_contained_in_workspace(clean_tok, workspace_root):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="dir-path-outside-workspace",
+                                reason=f"Dir path '{clean_tok}' is outside workspace root; requires human confirmation.",
+                            )
+
+                # Family B & D guard: PowerShell paths must resolve inside workspace_root
                 if rule.id == "allow-powershell-readonly":
-                    first_seg = raw_cmd.split("|")[0].strip()
+                    first_seg = self._split_pipeline_quote_aware(raw_cmd)[0].strip()
                     try:
                         tokens = shlex.split(first_seg, posix=False)
                     except Exception:
@@ -332,7 +579,8 @@ class HardPolicyEngine:
                             skip_next = False
                             continue
                         if tok.startswith("-"):
-                            if tok.lower() in ("-path", "-literalpath", "-includepath", "-excludepath"):
+                            tok_low = tok.lower()
+                            if tok_low in ("-path", "-literalpath"):
                                 if i + 1 < len(tokens):
                                     target_p = tokens[i + 1].strip("'\"")
                                     skip_next = True
@@ -342,6 +590,9 @@ class HardPolicyEngine:
                                             rule_id="powershell-path-outside-workspace",
                                             reason=f"PowerShell path '{target_p}' is outside workspace root; falls through to human confirmation.",
                                         )
+                            elif tok_low in ("-filter", "-pattern", "-include", "-exclude", "-erroraction", "-ea", "-warningaction", "-wa", "-informationaction", "-infa", "-encoding"):
+                                # Parameter takes an argument that is NOT a filesystem path
+                                skip_next = True
                             continue
                         target_p = tok.strip("'\"")
                         if not target_p or target_p.startswith("-"):
@@ -361,7 +612,7 @@ class HardPolicyEngine:
                 )
 
         # Any pipeline command that did not match allow-powershell-readonly is ambiguous
-        if "|" in raw_cmd:
+        if self._has_unquoted_pipe(raw_cmd):
             return PolicyResult(
                 verdict=PolicyVerdict.AMBIGUOUS,
                 reason="Command chaining or pipeline execution detected; falls through to Laya.",
@@ -450,18 +701,513 @@ class HardPolicyEngine:
             pass
         return False
 
+    def _mask_pipes_in_quotes(self, cmd: str) -> str:
+        """
+        Masks '|' inside single or double quotes so regex pattern matching
+        does not misinterpret argument literals (e.g. Select-String regex patterns)
+        as shell pipeline operators.
+        """
+        chars = []
+        in_single = False
+        in_double = False
+        for c in cmd:
+            if c == "'" and not in_double:
+                in_single = not in_single
+                chars.append(c)
+            elif c == '"' and not in_single:
+                in_double = not in_double
+                chars.append(c)
+            elif c == '|' and (in_single or in_double):
+                chars.append('_PIPE_')
+            else:
+                chars.append(c)
+        return "".join(chars)
+
+    def _has_unquoted_pipe(self, cmd: str) -> bool:
+        in_single = False
+        in_double = False
+        for c in cmd:
+            if c == "'" and not in_double:
+                in_single = not in_single
+            elif c == '"' and not in_single:
+                in_double = not in_double
+            elif c == '|' and not in_single and not in_double:
+                return True
+        return False
+
+    def _split_pipeline_quote_aware(self, cmd: str) -> List[str]:
+        if not cmd or not cmd.strip():
+            return []
+        stages = []
+        current = []
+        in_single = False
+        in_double = False
+        i = 0
+        n = len(cmd)
+
+        while i < n:
+            c = cmd[i]
+            if c == "'" and not in_double:
+                in_single = not in_single
+                current.append(c)
+                i += 1
+            elif c == '"' and not in_single:
+                in_double = not in_double
+                current.append(c)
+                i += 1
+            elif not in_single and not in_double:
+                if c == '|':
+                    if i + 1 < n and cmd[i + 1] == '|':
+                        current.append("||")
+                        i += 2
+                        continue
+                    stage = "".join(current).strip()
+                    stages.append(stage)
+                    current = []
+                    i += 1
+                else:
+                    current.append(c)
+                    i += 1
+            else:
+                current.append(c)
+                i += 1
+
+        last = "".join(current).strip()
+        if last or stages:
+            stages.append(last)
+
+        return stages if len(stages) > 1 else [cmd.strip()]
+
+    def _split_top_level_chain(self, cmd: str) -> List[str]:
+        if not cmd or not cmd.strip():
+            return []
+        stmts = []
+        current = []
+        in_single = False
+        in_double = False
+        brace_depth = 0
+        paren_depth = 0
+        i = 0
+        n = len(cmd)
+
+        while i < n:
+            c = cmd[i]
+            if c == "'" and not in_double:
+                in_single = not in_single
+                current.append(c)
+                i += 1
+            elif c == '"' and not in_single:
+                in_double = not in_double
+                current.append(c)
+                i += 1
+            elif not in_single and not in_double:
+                if c == '{':
+                    brace_depth += 1
+                    current.append(c)
+                    i += 1
+                elif c == '}':
+                    if brace_depth > 0:
+                        brace_depth -= 1
+                    current.append(c)
+                    i += 1
+                elif c == '(':
+                    paren_depth += 1
+                    current.append(c)
+                    i += 1
+                elif c == ')':
+                    if paren_depth > 0:
+                        paren_depth -= 1
+                    current.append(c)
+                    i += 1
+                elif brace_depth == 0 and paren_depth == 0:
+                    if c == ';':
+                        s = "".join(current).strip()
+                        if s:
+                            stmts.append(s)
+                        current = []
+                        i += 1
+                    elif c == '&' and i + 1 < n and cmd[i + 1] == '&':
+                        s = "".join(current).strip()
+                        if s:
+                            stmts.append(s)
+                        current = []
+                        i += 2
+                    elif c in ('\n', '\r'):
+                        s = "".join(current).strip()
+                        if s:
+                            stmts.append(s)
+                        current = []
+                        i += 1
+                    else:
+                        current.append(c)
+                        i += 1
+                else:
+                    current.append(c)
+                    i += 1
+            else:
+                current.append(c)
+                i += 1
+
+        last = "".join(current).strip()
+        if last:
+            stmts.append(last)
+
+        return stmts
+
+    def _parse_if_block(self, cmd: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        s = cmd.strip()
+        if not re.match(r'^if\s*\(', s, re.IGNORECASE):
+            return None
+
+        idx = s.find('(')
+        depth = 0
+        in_single = False
+        in_double = False
+        cond_end = -1
+        for i in range(idx, len(s)):
+            c = s[i]
+            if c == "'" and not in_double:
+                in_single = not in_single
+            elif c == '"' and not in_single:
+                in_double = not in_double
+            elif not in_single and not in_double:
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                    if depth == 0:
+                        cond_end = i
+                        break
+
+        if cond_end == -1:
+            return None
+
+        condition = s[idx + 1:cond_end].strip()
+
+        rest = s[cond_end + 1:].strip()
+        if not rest.startswith('{'):
+            return None
+
+        depth = 0
+        in_single = False
+        in_double = False
+        then_end = -1
+        for i in range(len(rest)):
+            c = rest[i]
+            if c == "'" and not in_double:
+                in_single = not in_single
+            elif c == '"' and not in_single:
+                in_double = not in_double
+            elif not in_single and not in_double:
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        then_end = i
+                        break
+
+        if then_end == -1:
+            return None
+
+        then_block = rest[1:then_end].strip()
+        after_then = rest[then_end + 1:].strip()
+
+        else_block = None
+        if after_then:
+            if re.match(r'^else\s*\{', after_then, re.IGNORECASE):
+                e_idx = after_then.find('{')
+                depth = 0
+                in_single = False
+                in_double = False
+                else_end = -1
+                for i in range(e_idx, len(after_then)):
+                    c = after_then[i]
+                    if c == "'" and not in_double:
+                        in_single = not in_single
+                    elif c == '"' and not in_single:
+                        in_double = not in_double
+                    elif not in_single and not in_double:
+                        if c == '{':
+                            depth += 1
+                        elif c == '}':
+                            depth -= 1
+                            if depth == 0:
+                                else_end = i
+                                break
+                if else_end == -1:
+                    return None
+                else_block = after_then[e_idx + 1:else_end].strip()
+                trailing = after_then[else_end + 1:].strip()
+                if trailing:
+                    return None
+            else:
+                return None
+
+        return condition, then_block, else_block
+
+    def _evaluate_if_block(self, raw_cmd: str, workspace_root: Optional[str] = None) -> Optional[PolicyResult]:
+        """
+        Evaluates PowerShell if constructs:
+        if (<condition>) { <then_block> } [else { <else_block> }]
+        Policy Change Protocol rule: An if-construct may ONLY be allowed if
+        every statement in condition, then-block, and optional else-block is independently ALLOWED.
+        Any DENY statement -> DENY.
+        Any AMBIGUOUS statement -> AMBIGUOUS.
+        Unparseable or nested unsupported constructs -> AMBIGUOUS (fail closed).
+        """
+        parsed = self._parse_if_block(raw_cmd)
+        if parsed is None:
+            return PolicyResult(
+                verdict=PolicyVerdict.AMBIGUOUS,
+                rule_id="unparseable-if-syntax",
+                reason="Unparseable or unsupported if-block syntax; failing closed to human confirmation.",
+            )
+
+        condition, then_block, else_block = parsed
+        clauses = [("condition", condition), ("then", then_block)]
+        if else_block:
+            clauses.append(("else", else_block))
+
+        first_ambiguous = None
+        for clause_name, clause_cmd in clauses:
+            if not clause_cmd.strip():
+                continue
+            clause_res = self._evaluate_run_command({"CommandLine": clause_cmd}, workspace_root=workspace_root)
+            if clause_res.verdict == PolicyVerdict.DENY:
+                return PolicyResult(
+                    verdict=PolicyVerdict.DENY,
+                    rule_id=clause_res.rule_id,
+                    reason=f"Hard Deny: If-block {clause_name} clause failed: {clause_res.reason}",
+                    matched_pattern=clause_res.matched_pattern,
+                    is_chained=True,
+                )
+            if clause_res.verdict != PolicyVerdict.ALLOW and first_ambiguous is None:
+                first_ambiguous = PolicyResult(
+                    verdict=PolicyVerdict.AMBIGUOUS,
+                    rule_id=clause_res.rule_id or f"if-{clause_name}-clause-ambiguous",
+                    reason=f"If-block {clause_name} clause '{clause_cmd}' requires human confirmation ({clause_res.reason}).",
+                    is_chained=True,
+                )
+
+        if first_ambiguous is not None:
+            return first_ambiguous
+
+        return PolicyResult(
+            verdict=PolicyVerdict.ALLOW,
+            rule_id="allow-powershell-if-construct",
+            reason="Hard Allow: If-construct where condition and all branch bodies are verified safe by L1.",
+            is_chained=True,
+        )
+
+    def _validate_pipeline_stages(self, raw_cmd: str) -> Optional[PolicyResult]:
+        """
+        Validates pipeline stages against strict sink allowlist (Item 2).
+        Allowed sinks: Select-String, Select-Object, Sort-Object, Measure-Object,
+        Format-*, Out-String, simple Where-Object without scriptblock side effects.
+        Pipes into native exes, dangerous chaining operators, or non-allowlisted sinks -> AMBIGUOUS.
+        """
+        if not self._has_unquoted_pipe(raw_cmd):
+            return None
+
+        stages = self._split_pipeline_quote_aware(raw_cmd)
+        if len(stages) <= 1:
+            return None
+
+        for stage in stages[1:]:
+            s_clean = stage.strip()
+            if not s_clean:
+                return PolicyResult(
+                    verdict=PolicyVerdict.AMBIGUOUS,
+                    rule_id="pipe-syntax-error",
+                    reason="Empty pipeline stage detected; requires human confirmation.",
+                    is_chained=True,
+                )
+
+            # Check redirection inside sink (ignoring scrubber placeholders)
+            clean_no_scrub = re.sub(r'<[A-Za-z0-9_\-]+>', '', s_clean)
+            if re.search(r'(?<!2)>|\b>\b|>>', clean_no_scrub):
+                return PolicyResult(
+                    verdict=PolicyVerdict.AMBIGUOUS,
+                    rule_id="redirection-disallowed-in-allow",
+                    reason="File redirection (>, >>) detected in pipeline sink; requires human confirmation.",
+                    is_chained=True,
+                )
+
+            toks = s_clean.split()
+            first = toks[0].lower()
+            if first in ("sh", "bash", "zsh", "ksh", "csh", "dash", "powershell", "pwsh", "python", "python2", "python3", "node", "cmd", "cmd.exe", "xargs", "perl", "ruby") or (first == "sudo" and len(toks) > 1 and toks[1].lower() in ("sh", "bash", "zsh", "ksh", "csh", "dash", "powershell", "pwsh", "python", "node", "cmd", "xargs")):
+                return PolicyResult(
+                    verdict=PolicyVerdict.AMBIGUOUS,
+                    rule_id="pipe-sink-native-interpreter",
+                    reason="Pipeline into native shell, interpreter, or execution utility requires human confirmation.",
+                    is_chained=True,
+                )
+
+            allowed = (
+                first in (
+                    "select-string", "sls",
+                    "select-object", "select",
+                    "sort-object", "sort",
+                    "measure-object", "measure",
+                    "out-string",
+                    "where-object", "?", "where",
+                    "format-table", "ft",
+                    "format-list", "fl",
+                    "format-wide", "fw",
+                    "format-custom",
+                )
+                or first.startswith("format-")
+            )
+            if not allowed:
+                return PolicyResult(
+                    verdict=PolicyVerdict.AMBIGUOUS,
+                    rule_id="pipe-sink-not-allowlisted",
+                    reason=f"Pipeline sink '{toks[0]}' is not in hard-allow sink allowlist; requires human confirmation.",
+                    is_chained=True,
+                )
+
+            if first in ("where-object", "?", "where"):
+                # Validate simple Where-Object without scriptblock side effects
+                # 1. Assignments
+                if re.search(r'(?:\+\+|--|\+=|-=|\*=|/=|=(?![=~]))', s_clean):
+                    return PolicyResult(
+                        verdict=PolicyVerdict.AMBIGUOUS,
+                        rule_id="where-object-side-effects-detected",
+                        reason="Where-Object scriptblock contains variable assignment or mutating operator; requires human confirmation.",
+                        is_chained=True,
+                    )
+                # 2. Mutating cmdlets
+                if re.search(r'\b(?:Remove-[A-Za-z]+|Set-[A-Za-z]+|New-[A-Za-z]+|Out-[A-Za-z]+|Invoke-[A-Za-z]+|Start-[A-Za-z]+|Stop-[A-Za-z]+|Clear-[A-Za-z]+|Write-[A-Za-z]+|ri\b|rm\b|del\b|erase\b|iex\b|kill\b)\b', s_clean, re.IGNORECASE):
+                    return PolicyResult(
+                        verdict=PolicyVerdict.AMBIGUOUS,
+                        rule_id="where-object-side-effects-detected",
+                        reason="Where-Object scriptblock invokes mutating cmdlet; requires human confirmation.",
+                        is_chained=True,
+                    )
+                # 3. Method invocation or type instantiation
+                if re.search(r'\.[a-zA-Z0-9_]+\s*\(|\[[a-zA-Z0-9_.:]+\]::|\bnew-object\b', s_clean, re.IGNORECASE):
+                    return PolicyResult(
+                        verdict=PolicyVerdict.AMBIGUOUS,
+                        rule_id="where-object-side-effects-detected",
+                        reason="Where-Object scriptblock contains method invocation or type construction; requires human confirmation.",
+                        is_chained=True,
+                    )
+                # 4. Semicolons or nested subshells/pipes
+                if ";" in s_clean or "`" in s_clean or "$(" in s_clean:
+                    return PolicyResult(
+                        verdict=PolicyVerdict.AMBIGUOUS,
+                        rule_id="where-object-side-effects-detected",
+                        reason="Where-Object scriptblock contains subshell or chained statement syntax; requires human confirmation.",
+                        is_chained=True,
+                    )
+
+        return None
+
     def _is_path_contained_in_workspace(self, path_str: str, workspace_root: Optional[str]) -> bool:
         if not path_str:
             return True
         if not workspace_root:
             return not (Path(path_str).is_absolute() or ".." in path_str)
         try:
-            ws_path = Path(workspace_root).resolve()
-            p = Path(path_str)
-            is_abs = p.is_absolute() or (len(path_str) >= 2 and path_str[1] == ':')
-            resolved_p = p.resolve() if is_abs else (ws_path / p).resolve()
-            return resolved_p.is_relative_to(ws_path)
+            norm_ws = os.path.normcase(os.path.abspath(workspace_root))
+            is_abs = os.path.isabs(path_str) or (len(path_str) >= 2 and path_str[1] == ':')
+            candidate = path_str if is_abs else os.path.join(workspace_root, path_str)
+            norm_p = os.path.normcase(os.path.abspath(candidate))
+            if norm_p == norm_ws:
+                return True
+            if not norm_p.startswith(norm_ws + os.sep):
+                return False
+            return self._verify_realpath_containment(candidate, workspace_root, check_trust_root=False)
         except Exception:
+            return False
+
+    def _verify_realpath_containment(self, candidate_path: str, workspace_root: str, check_trust_root: bool = True) -> bool:
+        """
+        Verifies that candidate_path does not escape workspace_root via symlinks or junctions,
+        does not target trust roots or disallowed directories, and contains no reparse points.
+        Uses a short-TTL cache (2.0s) to keep latency overhead negligible (<0.005 ms warm).
+        Fails closed (returns False -> AMBIGUOUS) on any error, reparse point, or escape.
+        """
+        if not candidate_path or not workspace_root:
+            return False
+        global _REALPATH_CACHE
+        now = time.monotonic()
+        cache_key = (os.path.normcase(candidate_path), os.path.normcase(workspace_root), check_trust_root)
+        cached = _REALPATH_CACHE.get(cache_key)
+        if cached and (now - cached[1] < _CACHE_TTL):
+            return cached[0]
+
+        try:
+            norm_ws = os.path.normcase(os.path.abspath(workspace_root))
+            norm_cand = os.path.normcase(os.path.abspath(candidate_path))
+
+            # 1. Reparse point and symlink check along candidate path hierarchy
+            curr = norm_cand
+            while curr and curr != norm_ws and len(curr) >= len(norm_ws):
+                if os.path.lexists(curr):
+                    try:
+                        if os.path.islink(curr):
+                            _REALPATH_CACHE[cache_key] = (False, now)
+                            return False
+                        st = os.lstat(curr)
+                        if getattr(st, 'st_file_attributes', 0) & 0x0400:  # FILE_ATTRIBUTE_REPARSE_POINT (junction/symlink)
+                            _REALPATH_CACHE[cache_key] = (False, now)
+                            return False
+                    except Exception:
+                        _REALPATH_CACHE[cache_key] = (False, now)
+                        return False
+                parent = os.path.dirname(curr)
+                if parent == curr:
+                    break
+                curr = parent
+
+            # 2. Realpath containment
+            real_ws = os.path.normcase(os.path.realpath(workspace_root))
+            real_cand = os.path.normcase(os.path.realpath(candidate_path))
+
+            if not real_cand.startswith(real_ws + os.sep) or real_cand == real_ws:
+                _REALPATH_CACHE[cache_key] = (False, now)
+                return False
+
+            # 3. Trust root and disallowed dirs verification on resolved target
+            if check_trust_root:
+                rel = os.path.relpath(real_cand, real_ws)
+                rel_parts = [p.lower() for p in Path(rel).parts]
+                filename = rel_parts[-1]
+
+                for part in rel_parts[:-1]:
+                    if part in DISALLOWED_DIRS_WORKSPACE_WRITE:
+                        _REALPATH_CACHE[cache_key] = (False, now)
+                        return False
+
+                if filename in TRUST_ROOT_FILES:
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+
+                if filename.startswith("taskfile") or (filename.startswith("requirements") and filename.endswith(".txt")) or filename.startswith("dockerfile"):
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+                if filename.startswith("docker-compose") and filename.endswith((".yml", ".yaml")):
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+                if len(rel_parts) == 2 and rel_parts[0] == "scripts" and filename.endswith((".sh", ".bat", ".ps1", ".cmd")):
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+                if "policy" in filename and filename.endswith((".yaml", ".yml", ".json")):
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+                if filename.endswith((".pth", ".pem", ".key")):
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+                if filename.startswith(".env") or any(k in filename for k in ("id_rsa", "id_ed25519", "credentials")):
+                    _REALPATH_CACHE[cache_key] = (False, now)
+                    return False
+
+            _REALPATH_CACHE[cache_key] = (True, now)
+            return True
+        except Exception:
+            _REALPATH_CACHE[cache_key] = (False, now)
             return False
 
     def _check_workspace_write_allowed(self, target_file_str: str, workspace_root: str) -> bool:
@@ -470,16 +1216,17 @@ class HardPolicyEngine:
         if self._is_dangerous_workspace_root(workspace_root):
             return False
         try:
-            ws_path = Path(workspace_root).resolve()
-            p = Path(target_file_str)
-            target_path = p.resolve() if p.is_absolute() else (ws_path / p).resolve()
-            if not target_path.is_relative_to(ws_path) or target_path == ws_path:
+            norm_ws = os.path.normcase(os.path.abspath(workspace_root))
+            is_abs = os.path.isabs(target_file_str) or (len(target_file_str) >= 2 and target_file_str[1] == ':')
+            candidate = target_file_str if is_abs else os.path.join(workspace_root, target_file_str)
+            norm_target = os.path.normcase(os.path.abspath(candidate))
+            if not norm_target.startswith(norm_ws + os.sep) or norm_target == norm_ws:
                 return False
-            rel_path = target_path.relative_to(ws_path)
+            rel_str = os.path.relpath(norm_target, norm_ws)
+            rel_parts = [part.lower() for part in Path(rel_str).parts]
         except Exception:
             return False
 
-        rel_parts = [part.lower() for part in rel_path.parts]
         filename = rel_parts[-1]
 
         # 1. Disallowed directory components (including agent_airlock/**)
@@ -518,7 +1265,8 @@ class HardPolicyEngine:
         if filename.startswith(".env") or any(k in filename for k in ("id_rsa", "id_ed25519", "credentials")):
             return False
 
-        return True
+        # Fast lexical checks passed. Verify realpath containment and reparse points:
+        return self._verify_realpath_containment(candidate, workspace_root, check_trust_root=True)
 
     def _evaluate_readonly_inspection(self, tool_name: str, tool_args: Dict[str, Any]) -> PolicyResult:
         # Check all string arguments against deny rules

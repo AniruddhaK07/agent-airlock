@@ -42,5 +42,9 @@ checkpoints/
 # Benchmark scratch directories
 bench-*/
 benchmark-sandbox/
+scratch/
 
 data/traces/
+data/review_sheet_*.jsonl
+docs/v2/review-sheet-*.md
+*review-sheet*
