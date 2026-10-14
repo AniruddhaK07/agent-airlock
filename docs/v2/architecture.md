@@ -88,7 +88,7 @@ Agent tool call (run_command / view_file / write_to_file)
 
 ---
 
-## 3. Deviations & Known Issues in Baseline
-1. **Daemon CLI Flags Unhandled**: `server.py:main()` does not parse `--status`, `--stop`, or `--foreground`. Any invocation attempts to launch a new daemon instance.
-2. **Test Audit Log Isolation**: `tests/test_daemon_ipc.py` initializes `AuditLogger` with the default path `~/.gemini/antigravity-cli/audit.jsonl` rather than an isolated temp directory.
-3. **Model Loading in Tests**: `TestDaemonIPC` starts a background model load in `asyncSetUp`, causing `asyncTearDown` to block for ~11.9s while waiting for the model load worker thread to finish.
+## 3. Deviations & Known Issues in Baseline (Resolved)
+1. **Daemon CLI Flags Unhandled**: **RESOLVED** in Phase 1.0 per ADR-003 and F-043 (`--status`, `--stop`, `--foreground` parsed via `argparse` in `server.py`).
+2. **Test Audit Log Isolation**: **RESOLVED** in Phase 0.0 per F-011 (`tests/conftest.py` autouse fixture isolates audit path; zero-byte delta on live audit log).
+3. **Model Loading in Tests**: **RESOLVED** in Phase 0.0 per F-011 (`FakeLayaClient` avoids background model loading in non-ML tests; teardown blocking eliminated).
