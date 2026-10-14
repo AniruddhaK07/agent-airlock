@@ -345,8 +345,8 @@ Historical v1 label boundaries and architecture decisions are preserved in [docs
 
 ## ADR-016 — Implementation of L1 Rule Family D (Policy Change Protocol, I8)
 - Date / session: 2026-10-11 / session 9
-- Status: awaiting Ani's approval (Policy Change Protocol, Invariant I8)
-- Decided by: user / awaiting Ani's approval
+- Status: approved (commit ed51beb)
+- Decided by: user
 - Context:
   Analysis of commands falling through L1 deterministic policy to ML/human review (`private/l1-gap-list.md`) revealed frequent benign inspection and workflow operations: `Get-ChildItem` with `Select-String`, `git grep`, `where.exe`, `dir`, `git branch` (list / `--show-current`), `git tag` (list / local create), and `git add` (workspace containment).
 - Options considered:
@@ -369,7 +369,7 @@ Historical v1 label boundaries and architecture decisions are preserved in [docs
   2. Prefilter soundness: Verified zero differences with and without `DENY_RULE_PREFILTERS` across all datasets.
   3. Latency gate: p99 stays at 5.169 ms (replay end-to-end; pure rule matching < 1.0 ms).
   4. False-allow verification: 0.00% false-allow rate on eval sets (0/20 in `eval_set.jsonl`, 0/6 in `eval_growth_draft.jsonl`). 95% Wilson score CI upper bound: 12.87% (explicitly stated: not evidence of safety).
-  5. Baseline DENY regression invariant: Added `test_replay_baseline_deny_regression` testing all 37 baseline DENY decisions against `tests/fixtures/baseline_37_denies.json`. Replay DENY count increased from 37 baseline to 69 (safely >= 37 baseline).
+  5. Baseline DENY regression invariant: Added `test_replay_baseline_deny_regression` testing all 37 baseline DENY decisions against `tests/fixtures/baseline_37_denies.json`. Replay DENY count reconciled to 38 (37 baseline + 1 justified daemon pid; remediated 31 false-denies per M-032).
 - Consequences / what would make us revisit this:
   - Any pattern allowing external path egress or mutation without human confirmation would require immediate tightening.
   - No replay decision may move from DENY to a weaker verdict without an explicit ADR.
@@ -377,7 +377,7 @@ Historical v1 label boundaries and architecture decisions are preserved in [docs
   - `tests/test_policy_engine.py`: 37 unit tests passed, including `test_family_d_rules_and_near_misses` and `test_replay_baseline_deny_regression`.
   - `tests/test_policy_perf.py`: 3 passed in 0.82s.
   - `tests/test_prefilter_soundness.py`: 1 passed (0 differences).
-  - Metric M-031 (`scripts/replay.py --all`): 4,050 ALLOWs (57.44%, +184 vs 3,866 baseline), 69 DENYs (0.98%, >= 37 baseline), 2,932 ASKs (41.58%). 3-way fatigue range: `[8.44, 18.35, 30.62]` per 100 cmds. Middle headline dropped to **18.35 per 100 commands** (from 27.91 baseline, saving 674 human prompts). Latency p50=0.445 ms, p95=2.163 ms, p99=5.169 ms. (All numbers IN-SAMPLE).
+  - Metric M-032 (`scripts/replay.py --all`): 4,064 ALLOWs (57.64%), 38 DENYs (0.54%, baseline 37 + 1 justified daemon pid), 2,949 ASKs (41.82%). Remediation of 31 False-Denies, Containment Symlink Guard & Savings Reconciliation: 653 prompts saved (reconciled; Hard Deny 22 removed). 3-way fatigue range: First-Match [18.65/100, saving 653 prompts], Retroactive [8.65/100, saving 503 prompts], Delay-Only [31.07/100, saving 979 prompts]. Latency p50=0.151 ms, p95=1.765 ms, p99=4.940 ms (< 5.0 ms gate PASS). (All numbers IN-SAMPLE).
 
 
 

@@ -145,3 +145,49 @@ def test_no_real_session_commands_in_tracked_files():
                 f"Tracked doc '{doc_f}' contains real session command text / indicator: '{indicator}'"
             )
 
+
+def test_fixtures_hygiene_no_leaks():
+    """Scans all tracked fixture files under tests/ for sensitive usernames, home paths, project names, and real UUIDs."""
+    import re
+    result = subprocess.run(
+        ["git", "ls-files", "tests"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
+    tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    fixture_files = [f for f in tracked if "fixture" in f.lower() or f.endswith((".json", ".jsonl", ".yaml", ".yml"))]
+
+    forbidden_patterns = [
+        (r"\bASUS\b", "Username leak: ASUS"),
+        (r"\bAniruddha(K07)?\b", "Username leak: Aniruddha"),
+        (r"aniruddhadiware5@gmail\.com", "Email leak"),
+        (r"[C:c]:[/\\]Users[/\\](?!dev_user\b)[a-zA-Z0-9_\-]+", "Real user home path leak"),
+        (r"/home/(?!dev_user\b)[a-zA-Z0-9_\-]+", "Real posix home path leak"),
+        (r"\bsva-harness\b", "Project name leak: sva-harness"),
+        (r"\bkaizen\b", "Project name leak: kaizen"),
+        (r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", "Real UUID leak"),
+    ]
+
+    violations = []
+    for f in fixture_files:
+        p = Path(f)
+        if not p.is_file():
+            continue
+        try:
+            content = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        # Ignore placeholder zero-UUIDs like 00000000-0000-0000-0000-000000000000
+        scrubbed_for_check = content.replace("00000000-0000-0000-0000-000000000000", "")
+
+        for pat, desc in forbidden_patterns:
+            matches = list(re.finditer(pat, scrubbed_for_check, re.IGNORECASE))
+            for m in matches:
+                line_no = scrubbed_for_check[:m.start()].count("\n") + 1
+                violations.append(f"{f}:{line_no} [{desc}] -> {m.group(0)}")
+
+    assert not violations, "Tests fixture hygiene violations found:\n" + "\n".join(violations)
+
