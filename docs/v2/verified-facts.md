@@ -83,7 +83,7 @@ wheel             0.47.0
 | F-002 | CPU is AMD Ryzen 7 7445HS w/ Radeon 740M Graphics (6 cores, 12 logical processors) | VERIFIED | `Get-CimInstance Win32_Processor` | 2026-10-09 |
 | F-003 | GPU is NVIDIA GeForce RTX 4050 Laptop GPU (6141 MiB VRAM), Driver 616.56, CUDA available in PyTorch | VERIFIED | `nvidia-smi` and `torch.cuda.is_available() == True` | 2026-10-09 |
 | F-004 | System RAM is ~16 GB (16,009,232 KB visible, ~5.8 GB free) | VERIFIED | `Get-CimInstance Win32_OperatingSystem` | 2026-10-09 |
-| F-005 | Live global agent-airlock install runs editable from `...\projects\sva-harness` in conda env `torch_env`; live daemon running | VERIFIED | Confirmed by Ani 2026-10-09 |
+| F-005 | Live global agent-airlock install runs editable from local project workspace in conda env `torch_env`; live daemon running | VERIFIED | Confirmed by Ani 2026-10-09 |
 | F-006 | Test suite passes with 132 passed, 1 skipped (README's "126" is outdated) | VERIFIED | `pytest -rs` in `airlock-v2` (`132 passed, 1 skipped in 19.47s`) | 2026-10-09 |
 | F-007 | Test suite single skip reason is POSIX Unix domain socket permissions | VERIFIED | `tests\test_daemon_ipc.py:479: Unix domain socket permissions only applicable on POSIX` | 2026-10-09 |
 | F-008 | `agent-airlock-daemon --status` does not print status; tries to start daemon and crashes if already active | VERIFIED | Inspected `agent_airlock/daemon/server.py:383-391` `main()`; no CLI arg parsing exists | 2026-10-09 |

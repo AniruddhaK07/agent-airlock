@@ -84,7 +84,7 @@ The Jev-Gated Safety Layer is a local, deterministic-first, fail-closed runtime 
 ## 3. Project Directory & Module Layout
 
 ```
-sva-harness/
+agent-airlock/
 ├── docs/
 │   ├── architecture.md           # Reviewed architecture (immutable reference)
 │   ├── spec.md                   # This living technical specification

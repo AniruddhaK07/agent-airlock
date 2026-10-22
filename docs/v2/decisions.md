@@ -287,7 +287,7 @@ Historical v1 label boundaries and architecture decisions are preserved in [docs
      - Host auto-approval classification: any ASKed run_command matching `private/host-allow-rules.txt` is host_auto regardless of delay.
      - Suggester: emit exact-command rules only (no wildcard script names) for commands executing workspace code (`npm/pnpm/yarn run`, `make`, `pytest`, `python <file>`, `cargo`, `node <file>`). Skip candidates covered by L1 or host rules. Report estimated human prompts saved.
      - L1 latency: profile slowest 20 real commands per rule family on trace replay and optimize to bring p99 <= 5.0 ms.
-     - Backport patches to live sva-harness install documented in gitignored `private/backport-to-live.md` (fork-bomb ReDoS, git `--output` / `--no-index`).
+     - Backport patches to live extension install documented in gitignored `private/backport-to-live.md` (fork-bomb ReDoS, git `--output` / `--no-index`).
 - Consequences / what would make us revisit this:
   - Any future embedding similarity investigation is deferred to post-1.1 research.
 - Evidence:

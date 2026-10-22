@@ -61,7 +61,7 @@
 - Active conda environment for v2 development is `airlock-v2`. Never create or modify other environments.
 - Always run tests via `conda run -n airlock-v2 pytest ...` to ensure CUDA GPU acceleration and Python 3.11 environment.
 - Never touch live `~/.gemini/antigravity-cli/audit.jsonl`.
-- `checkpoints/` is gitignored and contains local weights copied from sva-harness.
+- `checkpoints/` is gitignored and contains local weights.
 - Never use `git add -A` or `git add .`; stage explicit files only. Forbidden: `data/traces/`, `private/`, `checkpoints/`, `*.onnx`, `*.pt`, `*.bin`, `*.safetensors`.
 
 ## Session Log (append-only, newest first)

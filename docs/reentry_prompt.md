@@ -7,7 +7,7 @@
 ```markdown
 # Session Bootstrap & Reentry — Jev-Gated Antigravity Safety Gateway
 
-You are resuming work on the **Jev-Gated Antigravity CLI Extension** (`sva-harness`).
+You are resuming work on the **Jev-Gated Antigravity CLI Extension** (`agent-airlock`).
 We have completed **Phase 0 (Bootstrap)**, **Phase 1 (Hard Policy Engine)**, **Phase 2 (Daemon & IPC)**, and **Phase 3 (Jev Integration Layer)** with 100% test coverage (64 test methods, 130 subtests, 0 false negatives, authenticated dual-transport IPC, race-safe auto-spawn, workspace isolation, strictly pinned model `jev-1.13.0`, 400ms wall-clock fail-closed budget, and calibrated gating).
 The GitHub remote is live at `https://github.com/AniruddhaK07/jev-airlock` on branch `main` with tag `phase3-complete`.
 Today we are implementing **Phase 4 — Circuit Breaker**.

@@ -55,7 +55,7 @@ pytest tests/test_scenarios.py -v       # Multi-turn E2E operational scenarios
 
 ## 3. Policy Change Protocol (Security-Critical Rule Review)
 
-Changes to the deterministic rule set in [`agent_airlock/policy/default_rules.py`](file:///C:/Users/ASUS/Desktop/A/projects/sva-harness/agent_airlock/policy/default_rules.py) and input normalizer in [`agent_airlock/policy/normalizer.py`](file:///C:/Users/ASUS/Desktop/A/projects/sva-harness/agent_airlock/policy/normalizer.py) are **security-critical**.
+Changes to the deterministic rule set in [`agent_airlock/policy/default_rules.py`](agent_airlock/policy/default_rules.py) and input normalizer in [`agent_airlock/policy/normalizer.py`](agent_airlock/policy/normalizer.py) are **security-critical**.
 
 > [!CAUTION]
 > A false negative (allowing a dangerous command to execute without human review) is the highest-severity failure mode in Agent Airlock. PRs proposing changes to built-in rules face heightened scrutiny compared to general code changes.
