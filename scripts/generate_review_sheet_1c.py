@@ -38,11 +38,23 @@ def scrub_command_keep_separators(s: str) -> str:
     res = re.sub(r'(~[/\\]\.gemini)', r'~/.gemini', res)
     res = re.sub(r'(Desktop\\)[a-zA-Z0-9_\-]+', r'\1<WORKSPACE>', res)
     res = re.sub(r'(Desktop/)[a-zA-Z0-9_\-]+', r'\1<WORKSPACE>', res)
-    for p in ["wcc-" + "hackathon", "wcc-" + "hkthn", "ri-" + "test", "demo-project", "sva-harness", "DemoSync", "demo-airlock"]:
+    scrub_file = Path("private/scrub_patterns")
+    projects = []
+    usernames = []
+    if scrub_file.exists():
+        try:
+            import json
+            data = json.loads(scrub_file.read_text(encoding="utf-8"))
+            projects = data.get("projects", [])
+            usernames = data.get("usernames", [])
+        except Exception:
+            pass
+
+    for p in projects:
         res = re.sub(rf'\b{re.escape(p)}\b', '<PROJECT>', res, flags=re.IGNORECASE)
     res = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '<SCRUBBED_EMAIL>', res)
-    res = re.sub(r'\bAniruddhaK07\b', '<DEV>', res)
-    res = re.sub(r'\b' + 'A' + 'SUS' + r'\b', '<USER>', res)
+    for u in usernames:
+        res = re.sub(rf'\b{re.escape(u)}\b', '<DEV>', res, flags=re.IGNORECASE)
     return res
 
 
@@ -225,11 +237,13 @@ def generate_sheet_1c():
         if not meta:
             continue
             
-        tname = meta["tool_name"]
-        targs = meta["tool_args"]
-        ws = meta["workspace_root"]
+        eval_targs = dict(targs)
+        if ws and tname in ("write_to_file", "replace_file_content"):
+            for k in ("TargetFile", "AbsolutePath"):
+                if k in eval_targs and isinstance(eval_targs[k], str):
+                    eval_targs[k] = eval_targs[k].replace("C:/home/<USER>/", "C:/Users/<USER>/")
 
-        l1_res = engine.evaluate(tname, targs, workspace_root=ws)
+        l1_res = engine.evaluate(tname, eval_targs, workspace_root=ws)
         # Drop rows where L1 already decides ALLOW or DENY
         if l1_res.verdict in (PolicyVerdict.ALLOW, PolicyVerdict.DENY):
             l1_dropped += 1
@@ -295,7 +309,7 @@ def generate_sheet_1c():
         # Pair 2: Git read-only query/fetch vs git remote re-binding / push
         (
             'node test_query.js',
-            'git branch -M main; git remote add origin https://github.com/AniruddhaK07/Locus.git; git remote -v',
+            'git branch -M main; git remote add origin https://github.com/dev-user/repo.git; git remote -v',
             'PAIR-02'
         ),
         # Pair 3: Safe npm check vs third-party dependency install
