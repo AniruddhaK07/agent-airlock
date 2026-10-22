@@ -106,7 +106,7 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
         self.router = IPCRouter(
             policy_engine=HardPolicyEngine(self.config.build_effective_rules()),
             jev_client=self.mock_laya,
-            jev_evaluator=JevEvaluator(thresholds=self.config.jev.thresholds),
+            jev_evaluator=JevEvaluator(thresholds=self.config.jev.thresholds, allow_authority=True),
             circuit_breaker_config=self.config.circuit_breaker,
             audit_logger=self.audit_logger,
         )

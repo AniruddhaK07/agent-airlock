@@ -11,16 +11,28 @@ import re
 from pathlib import Path
 
 
-_U_NAME = "A" + "SUS"
-_P1 = "wcc-" + "hackathon"
-_P2 = "ri-" + "test"
+import json
 
-FORBIDDEN_PATTERNS = [
-    (r"\b" + _U_NAME + r"\b", f"Username leak: {_U_NAME}"),
-    (r"[C:c]:[/\\]Users[/\\]" + _U_NAME, f"Home path leak: Users/{_U_NAME}"),
-    (_P1, f"Project name leak: {_P1}"),
-    (_P2, f"Project name leak: {_P2}"),
-]
+
+def _get_forbidden_patterns():
+    scrub_file = Path("private/scrub_patterns")
+    usernames = []
+    projects = []
+    if scrub_file.exists():
+        try:
+            data = json.loads(scrub_file.read_text(encoding="utf-8"))
+            usernames = data.get("usernames", [])
+            projects = data.get("projects", [])
+        except Exception:
+            pass
+
+    patterns = []
+    for u in usernames:
+        patterns.append((r"\b" + re.escape(u) + r"\b", f"Username leak: {u}"))
+        patterns.append((r"[C:c]:[/\\]Users[/\\]" + re.escape(u), f"Home path leak: Users/{u}"))
+    for p in projects:
+        patterns.append((r"\b" + re.escape(p) + r"\b", f"Project name leak: {p}"))
+    return patterns
 
 
 def scan_tracked_files():
@@ -39,7 +51,7 @@ def scan_tracked_files():
         except Exception:
             continue
 
-        for pat, desc in FORBIDDEN_PATTERNS:
+        for pat, desc in _get_forbidden_patterns():
             matches = list(re.finditer(pat, content, re.IGNORECASE))
             for m in matches:
                 # Find line number

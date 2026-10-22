@@ -1281,6 +1281,391 @@ class TestHardPolicyEngine(unittest.TestCase):
         res_malformed = self.engine.evaluate("run_command", {"CommandLine": cmd_malformed}, workspace_root=ws)
         self.assertEqual(res_malformed.verdict, PolicyVerdict.AMBIGUOUS)
 
+    def test_approved_gap_rules_1_2_3_5_7_and_near_misses(self):
+        """
+        Policy Change Protocol: Comprehensive tests and near-misses for approved L1 rules:
+        - Rule 1: allow-powershell-test-path
+        - Rule 2: allow-powershell-copy-item
+        - Rule 3: allow-powershell-get-process
+        - Rule 5: allow-tool-help
+        - Rule 7: allow-git-commit
+        """
+        ws = "C:\\mock\\workspace"
+
+        # -------------------------------------------------------------
+        # Rule 1: allow-powershell-test-path
+        # -------------------------------------------------------------
+        # Safe Program Files discovery (Row 013)
+        res_r1_edge = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"'}, workspace_root=ws)
+        self.assertEqual(res_r1_edge.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r1_edge.rule_id, "allow-powershell-test-path")
+
+        res_r1_ws = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "docs/spec.md"'}, workspace_root=ws)
+        self.assertEqual(res_r1_ws.verdict, PolicyVerdict.ALLOW)
+
+        # Compound chain of Test-Path (exact RS1c-013)
+        res_r1_compound = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"; Test-Path "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"'}, workspace_root=ws)
+        self.assertEqual(res_r1_compound.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r1_compound.rule_id, "allow-compound-chain")
+
+        # Near-misses:
+        # Wildcards disallowed
+        res_r1_glob = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "C:\\Program Files\\*\\test.exe"'}, workspace_root=ws)
+        self.assertEqual(res_r1_glob.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # UNC paths disallowed
+        res_r1_unc = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "\\\\server\\share\\file.txt"'}, workspace_root=ws)
+        self.assertEqual(res_r1_unc.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # External paths not matching Program Files disallowed
+        res_r1_ext = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "C:\\Windows\\System32\\cmd.exe"'}, workspace_root=ws)
+        self.assertEqual(res_r1_ext.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Credential path denied
+        res_r1_cred = self.engine.evaluate("run_command", {"CommandLine": 'Test-Path "C:\\Users\\<USER>\\.ssh\\id_rsa"'}, workspace_root=ws)
+        self.assertEqual(res_r1_cred.verdict, PolicyVerdict.DENY)
+
+        # -------------------------------------------------------------
+        # Rule 2: allow-powershell-copy-item
+        # -------------------------------------------------------------
+        # Safe workspace copy (exact RS1c-092)
+        res_r2_safe = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path PROGRESS.md -Destination docs/PROGRESS.md'}, workspace_root=ws)
+        self.assertEqual(res_r2_safe.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r2_safe.rule_id, "allow-powershell-copy-item")
+
+        # Near-miss: -Force disallowed
+        res_r2_force = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path PROGRESS.md -Destination docs/PROGRESS.md -Force'}, workspace_root=ws)
+        self.assertEqual(res_r2_force.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: -Recurse disallowed
+        res_r2_recurse = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path src -Destination backup -Recurse'}, workspace_root=ws)
+        self.assertEqual(res_r2_recurse.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: Destination is package.json / trust root
+        res_r2_trust = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path new_pkg.json -Destination package.json'}, workspace_root=ws)
+        self.assertEqual(res_r2_trust.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: Destination is hooks / CI files
+        res_r2_hook = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path evil.sh -Destination .git/hooks/pre-commit'}, workspace_root=ws)
+        self.assertEqual(res_r2_hook.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: Destination is build script
+        res_r2_build = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path update.sh -Destination scripts/build.sh'}, workspace_root=ws)
+        self.assertEqual(res_r2_build.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: Source outside workspace
+        res_r2_out_src = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path "C:\\Windows\\calc.exe" -Destination "calc.exe"'}, workspace_root=ws)
+        self.assertEqual(res_r2_out_src.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: Destination outside workspace
+        res_r2_out_dst = self.engine.evaluate("run_command", {"CommandLine": 'Copy-Item -Path "PROGRESS.md" -Destination "C:\\out.txt"'}, workspace_root=ws)
+        self.assertEqual(res_r2_out_dst.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # -------------------------------------------------------------
+        # Rule 3: allow-powershell-get-process
+        # -------------------------------------------------------------
+        # Safe property query piped to safe sink (exact RS1c-049)
+        res_r3_threads = self.engine.evaluate("run_command", {"CommandLine": '(Get-Process -Id 24280).Threads | Select-Object Id, ThreadState, WaitReason'}, workspace_root=ws)
+        self.assertEqual(res_r3_threads.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r3_threads.rule_id, "allow-powershell-get-process")
+
+        res_r3_table = self.engine.evaluate("run_command", {"CommandLine": 'Get-Process -Name node | Format-Table'}, workspace_root=ws)
+        self.assertEqual(res_r3_table.verdict, PolicyVerdict.ALLOW)
+
+        # Near-miss: mutating cmdlet Stop-Process
+        res_r3_stop = self.engine.evaluate("run_command", {"CommandLine": 'Get-Process | Stop-Process'}, workspace_root=ws)
+        self.assertEqual(res_r3_stop.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: -Wait switch
+        res_r3_wait = self.engine.evaluate("run_command", {"CommandLine": 'Get-Process -Wait'}, workspace_root=ws)
+        self.assertEqual(res_r3_wait.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: scriptblock mutation
+        res_r3_kill = self.engine.evaluate("run_command", {"CommandLine": 'Get-Process | ForEach-Object { $_.Kill() }'}, workspace_root=ws)
+        self.assertEqual(res_r3_kill.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # -------------------------------------------------------------
+        # Rule 5: allow-tool-help
+        # -------------------------------------------------------------
+        # Safe help query with 2>&1 (exact RS1c-094)
+        res_r5_agy = self.engine.evaluate("run_command", {"CommandLine": 'agy help 2>&1'}, workspace_root=ws)
+        self.assertEqual(res_r5_agy.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r5_agy.rule_id, "allow-tool-help")
+
+        res_r5_git = self.engine.evaluate("run_command", {"CommandLine": 'git --help'}, workspace_root=ws)
+        self.assertEqual(res_r5_git.verdict, PolicyVerdict.ALLOW)
+
+        res_r5_node = self.engine.evaluate("run_command", {"CommandLine": 'node --help'}, workspace_root=ws)
+        self.assertEqual(res_r5_node.verdict, PolicyVerdict.ALLOW)
+
+        # Near-miss: piping to bash disallowed
+        res_r5_pipe = self.engine.evaluate("run_command", {"CommandLine": 'agy help | bash'}, workspace_root=ws)
+        self.assertEqual(res_r5_pipe.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: path separator disallowed (must be bare command name)
+        res_r5_path = self.engine.evaluate("run_command", {"CommandLine": 'bin/node --help'}, workspace_root=ws)
+        self.assertEqual(res_r5_path.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: file redirection disallowed
+        res_r5_redir = self.engine.evaluate("run_command", {"CommandLine": 'git --help > help.txt'}, workspace_root=ws)
+        self.assertEqual(res_r5_redir.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: unknown tool not in allowlist
+        res_r5_unknown = self.engine.evaluate("run_command", {"CommandLine": 'random_tool_12345 --help'}, workspace_root=ws)
+        self.assertEqual(res_r5_unknown.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # -------------------------------------------------------------
+        # Rule 7: allow-git-commit
+        # -------------------------------------------------------------
+        # Safe git commit (exact RS1c-023)
+        res_r7_safe = self.engine.evaluate("run_command", {"CommandLine": 'git commit -m "feat: integrate Gemini 1.5 Flash grounded AI briefing and create executable hackathon blueprint"'}, workspace_root=ws)
+        self.assertEqual(res_r7_safe.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r7_safe.rule_id, "allow-git-commit")
+
+        res_r7_quiet = self.engine.evaluate("run_command", {"CommandLine": 'git commit -q -m "fix: bug"'}, workspace_root=ws)
+        self.assertEqual(res_r7_quiet.verdict, PolicyVerdict.ALLOW)
+
+        # Compound chain of git add + git commit (exact RS1c-066)
+        res_r7_compound = self.engine.evaluate("run_command", {"CommandLine": 'git add docs/VERIFIED_FACTS.md; git commit -m "docs-overpass-free-host-probes"'}, workspace_root=ws)
+        self.assertEqual(res_r7_compound.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_r7_compound.rule_id, "allow-compound-chain")
+
+        # Near-miss: --no-verify bypass
+        res_r7_noverify = self.engine.evaluate("run_command", {"CommandLine": 'git commit --no-verify -m "bypass"'}, workspace_root=ws)
+        self.assertEqual(res_r7_noverify.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: -a / --all
+        res_r7_all = self.engine.evaluate("run_command", {"CommandLine": 'git commit -a -m "all"'}, workspace_root=ws)
+        self.assertEqual(res_r7_all.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: --amend
+        res_r7_amend = self.engine.evaluate("run_command", {"CommandLine": 'git commit --amend -m "amend"'}, workspace_root=ws)
+        self.assertEqual(res_r7_amend.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: -F file
+        res_r7_file = self.engine.evaluate("run_command", {"CommandLine": 'git commit -F msg.txt'}, workspace_root=ws)
+        self.assertEqual(res_r7_file.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: -S signing
+        res_r7_sign = self.engine.evaluate("run_command", {"CommandLine": 'git commit -S -m "signed"'}, workspace_root=ws)
+        self.assertEqual(res_r7_sign.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: --author spoof
+        res_r7_author = self.engine.evaluate("run_command", {"CommandLine": 'git commit --author="Evil <evil@example.com>" -m "spoof"'}, workspace_root=ws)
+        self.assertEqual(res_r7_author.verdict, PolicyVerdict.AMBIGUOUS)
+
+    def test_grep_and_select_string_regex_fixes(self):
+        ws = tempfile.mkdtemp(prefix="airlock_ws_")
+        (Path(ws) / "src" / "ui").mkdir(parents=True, exist_ok=True)
+        (Path(ws) / "src" / "engine" / "infra").mkdir(parents=True, exist_ok=True)
+        (Path(ws) / "src" / "engine" / "infra" / "httpClient.ts").write_text("class HttpClient { get() {} }")
+        test_vec = Path(ws) / "test_vectors" / "astropy" / "astropy" / "units"
+        test_vec.mkdir(parents=True, exist_ok=True)
+        (test_vec / "core.py").write_text("class Unit:\n    def _normalize_unit(): pass\n")
+
+        # RS2-048 (git grep with regex alternation and character classes)
+        res_48 = self.engine.evaluate("run_command", {"CommandLine": 'git grep -E \'className="[^"]*\\b(box|map-box|sticky-bar|error-msg)\\b\' src/ui/'}, workspace_root=ws)
+        self.assertEqual(res_48.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_48.rule_id, "allow-git-grep")
+
+        # RS2-086 (git grep with hex regex and curly braces)
+        res_86 = self.engine.evaluate("run_command", {"CommandLine": 'git grep -E "#[0-9a-fA-F]{3,8}\\b" src/ui/'}, workspace_root=ws)
+        self.assertEqual(res_86.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_86.rule_id, "allow-git-grep")
+
+        # RS2-089 (git grep with parenthesis in search string)
+        res_89 = self.engine.evaluate("run_command", {"CommandLine": 'git grep "fetch(" src/'}, workspace_root=ws)
+        self.assertEqual(res_89.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_89.rule_id, "allow-git-grep")
+
+        # RS2-054 (Select-String with parenthesis in search pattern)
+        res_54 = self.engine.evaluate("run_command", {"CommandLine": 'Select-String -Path src/engine/infra/httpClient.ts -Pattern "get\\("'}, workspace_root=ws)
+        self.assertEqual(res_54.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_54.rule_id, "allow-powershell-readonly")
+
+        # RS2-067 (Select-String with alternation and parentheses in search pattern)
+        res_67 = self.engine.evaluate("run_command", {"CommandLine": 'Select-String -Path "test_vectors\\astropy\\astropy\\units\\core.py" -Pattern "class Unit|def _normalize_unit|def to\\("'}, workspace_root=ws)
+        self.assertEqual(res_67.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_67.rule_id, "allow-powershell-readonly")
+
+        # Near-misses:
+        # git grep outside workspace
+        res_gg_out = self.engine.evaluate("run_command", {"CommandLine": 'git grep "foo" ../outside'}, workspace_root=ws)
+        self.assertEqual(res_gg_out.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # git grep with pager execution
+        res_gg_pager = self.engine.evaluate("run_command", {"CommandLine": 'git grep -O /bin/sh "foo"'}, workspace_root=ws)
+        self.assertEqual(res_gg_pager.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Select-String with subexpression expansion
+        res_ss_sub = self.engine.evaluate("run_command", {"CommandLine": 'Select-String -Path src -Pattern "$(whoami)"'}, workspace_root=ws)
+        self.assertEqual(res_ss_sub.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Select-String with command chaining
+        res_ss_chain = self.engine.evaluate("run_command", {"CommandLine": 'Select-String -Path src -Pattern "foo" ; rm -rf /'}, workspace_root=ws)
+        self.assertEqual(res_ss_chain.verdict, PolicyVerdict.DENY)
+
+    def test_approved_three_rules(self):
+        ws = tempfile.mkdtemp(prefix="airlock_ws_")
+
+        # Rule 18: Write-Output pure string literals
+        res_wo = self.engine.evaluate("run_command", {"CommandLine": 'Write-Output "Deployment succeeded"'}, workspace_root=ws)
+        self.assertEqual(res_wo.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_wo.rule_id, "allow-powershell-write-output")
+
+        res_wo_sq = self.engine.evaluate("run_command", {"CommandLine": "Write-Output 'Literal string output'"}, workspace_root=ws)
+        self.assertEqual(res_wo_sq.verdict, PolicyVerdict.ALLOW)
+
+        # Near-miss: Write-Output redirection
+        res_wo_redir = self.engine.evaluate("run_command", {"CommandLine": 'Write-Output "test" > out.txt'}, workspace_root=ws)
+        self.assertEqual(res_wo_redir.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: Write-Output subexpression
+        res_wo_sub = self.engine.evaluate("run_command", {"CommandLine": 'Write-Output "$(whoami)"'}, workspace_root=ws)
+        self.assertEqual(res_wo_sub.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Rule 19: New-Item Directory
+        res_ni = self.engine.evaluate("run_command", {"CommandLine": 'New-Item -ItemType Directory -Path "build_artifacts"'}, workspace_root=ws)
+        self.assertEqual(res_ni.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_ni.rule_id, "allow-powershell-new-item-dir")
+
+        # Near-miss: New-Item File
+        res_ni_file = self.engine.evaluate("run_command", {"CommandLine": 'New-Item -ItemType File -Path "build.txt"'}, workspace_root=ws)
+        self.assertEqual(res_ni_file.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: New-Item Directory outside workspace
+        res_ni_out = self.engine.evaluate("run_command", {"CommandLine": 'New-Item -ItemType Directory -Path "C:\\Windows\\Temp"'}, workspace_root=ws)
+        self.assertEqual(res_ni_out.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: New-Item Directory targeting sensitive folder (.git)
+        res_ni_git = self.engine.evaluate("run_command", {"CommandLine": 'New-Item -ItemType Directory -Path ".git/custom"'}, workspace_root=ws)
+        self.assertEqual(res_ni_git.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Rule 20: python -m pip show|list|--version
+        res_pip_list = self.engine.evaluate("run_command", {"CommandLine": 'python -m pip list'}, workspace_root=ws)
+        self.assertEqual(res_pip_list.verdict, PolicyVerdict.ALLOW)
+        self.assertEqual(res_pip_list.rule_id, "allow-python-pip-inspect")
+
+        res_pip_show = self.engine.evaluate("run_command", {"CommandLine": 'python -m pip show torch'}, workspace_root=ws)
+        self.assertEqual(res_pip_show.verdict, PolicyVerdict.ALLOW)
+
+        res_pip_ver = self.engine.evaluate("run_command", {"CommandLine": 'python -m pip --version'}, workspace_root=ws)
+        self.assertEqual(res_pip_ver.verdict, PolicyVerdict.ALLOW)
+
+        # Near-miss: pip install
+        res_pip_inst = self.engine.evaluate("run_command", {"CommandLine": 'python -m pip install requests'}, workspace_root=ws)
+        self.assertEqual(res_pip_inst.verdict, PolicyVerdict.AMBIGUOUS)
+
+        # Near-miss: pip with command chaining
+        res_pip_chain = self.engine.evaluate("run_command", {"CommandLine": 'python -m pip list ; whoami'}, workspace_root=ws)
+        self.assertEqual(res_pip_chain.verdict, PolicyVerdict.AMBIGUOUS)
+
+    def test_quote_aware_tokenizer_property_fuzz(self):
+        """
+        Property/fuzz test for quote-aware tokenizer:
+        If engine.evaluate(...) == ALLOW, then no unquoted ;, &, >, <, $, `, (, )
+        may appear anywhere in the command (or in any segment).
+        Tests include:
+        - unbalanced quotes
+        - escaped quotes
+        - ' inside ", " inside '
+        - PowerShell backtick escapes (`$, ``, `;`, `|, `", etc.)
+        - adversarial injections into known safe prefixes
+        - randomized string fuzzing
+        """
+        def is_char_quoted(cmd: str, index: int) -> bool:
+            in_single = False
+            in_double = False
+            i = 0
+            n = len(cmd)
+            while i < n:
+                c = cmd[i]
+                if c == "'" and not in_double:
+                    in_single = not in_single
+                elif c == '"' and not in_single:
+                    if c == '"' and i + 1 < n and cmd[i + 1] == '"':
+                        i += 1
+                    else:
+                        in_double = not in_double
+                elif c == '`' and not in_single:
+                    if i + 1 < n:
+                        i += 1
+                        if i == index:
+                            return in_single or in_double
+                if i == index:
+                    return in_single or in_double
+                i += 1
+            return False
+
+        forbidden_unquoted = {';', '&', '>', '<', '$', '`', '(', ')'}
+
+        valid_prefixes = [
+            'git status',
+            'git diff',
+            'git log',
+            'git grep "pattern" src/',
+            'Select-String -Path src/main.py -Pattern "test"',
+            'Get-ChildItem -Path src',
+            'Write-Output "Hello world"',
+            'python -m pip list',
+            'python -m pip show torch',
+            'dir /b src',
+            'where git',
+        ]
+
+        adversarial_payloads = [
+            '; rm -rf /',
+            '&& calc.exe',
+            '| bash',
+            '> secret.txt',
+            '< input.txt',
+            '$(whoami)',
+            '`whoami`',
+            '`$env:PASSWORD',
+            '`; format C:',
+            '`| Invoke-Expression',
+            '(Get-Process)',
+            'className="foo\'bar"',
+            "'foo\"bar'",
+            '"unclosed double quote',
+            "'unclosed single quote",
+            '"""triple quotes"""',
+            '\\"escaped quote\\"',
+            '""empty quotes""',
+            'Write-Output "test`"injection"',
+            'Select-String -Pattern "test`$(whoami)"',
+            'git grep "test`|rm"',
+        ]
+
+        fuzz_cases = list(adversarial_payloads)
+        for prefix in valid_prefixes:
+            for adv in adversarial_payloads:
+                fuzz_cases.append(f"{prefix} {adv}")
+                fuzz_cases.append(f"{prefix}; {adv}")
+                fuzz_cases.append(f"{prefix} | {adv}")
+                fuzz_cases.append(f"{adv} ; {prefix}")
+
+        import random
+        rng = random.Random(42)
+        chars = list("abcdefghijklmnopqrstuvwxyz0123456789 -_./\\\"'`$;|&><()")
+        for _ in range(300):
+            length = rng.randint(5, 50)
+            rand_cmd = "".join(rng.choice(chars) for _ in range(length))
+            fuzz_cases.append(rand_cmd)
+
+        ws = tempfile.mkdtemp(prefix="airlock_fuzz_")
+        for cmd in fuzz_cases:
+            res = self.engine.evaluate("run_command", {"CommandLine": cmd}, workspace_root=ws)
+            if res.verdict == PolicyVerdict.ALLOW:
+                if res.is_chained:
+                    continue
+                for i, ch in enumerate(cmd):
+                    if ch in forbidden_unquoted:
+                        self.assertTrue(
+                            is_char_quoted(cmd, i),
+                            f"ALLOW invariant violated: command '{cmd}' has unquoted '{ch}' at index {i}!"
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -243,9 +243,9 @@ def get_default_rules() -> List[PolicyRule]:
             tools=["run_command"],
             field="CommandLine",
             pattern=(
-                r'^(?:Get-ChildItem|Select-String|Get-Content|Test-Path|Get-Process|Get-Command)'
+                r'^(?:Get-ChildItem|Select-String|Get-Content|Get-Command)'
                 r'(?![^|\r\n]*?(?:-(?:wait)\b|Env:|HKLM:|HKCU:|\\\\|https?://|ftp://|\.\.[/\\]))'
-                r'[^|$(){}\@;&><\`\r\n]*'
+                r'(?:\s+(?:\'[^\'\r\n]*\'|"[^"$`\r\n]*"|[^\s|$(){}\@;&><`\r\n]+))*'
                 r'(?:\s*\|\s*(?:Select-String|Select-Object|Sort-Object|Measure-Object|Out-String|Format-Table|Format-List|Format-Wide|Format-Custom|Where-Object|\?|where)'
                 r'(?![^|\r\n]*?(?:-(?:wait)\b|Env:|HKLM:|HKCU:|\\\\|https?://|ftp://|\.\.[/\\]))'
                 r'[^|;&><\`\r\n]*)*$'
@@ -277,7 +277,7 @@ def get_default_rules() -> List[PolicyRule]:
                 r'^git(?:\s+--no-pager)*\s+'
                 r'grep'
                 r'(?:\s+-(?:[inEIwFvhqpzcwLl]|-[a-zA-Z0-9_\-]+|[ABC]\s*\d+))*'
-                r'(?:\s+(?!--no-index\b|-O\b|--open-files-in-pager\b)[^\s;&|`$(){}<>]+)*$'
+                r'(?:\s+(?!--no-index\b|-O\b|--open-files-in-pager\b)(?:\'[^\'\r\n]*\'|"[^"$`\r\n]*"|[^\s;&|`$(){}<>]+))*$'
             ),
         ),
 
@@ -369,6 +369,168 @@ def get_default_rules() -> List[PolicyRule]:
                 r'(?:\s+[a-zA-Z0-9_\-\.]+)?'
                 r'(?:\s+-m\s+(?:(?:"[^"\r\n]*"|\'[^\'\r\n]*\')|[a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+)*))?'
                 r'(?:\s+[a-zA-Z0-9_\-\.]+)?$'
+            ),
+        ),
+
+        # =====================================================================
+        # HARD ALLOW RULES: APPROVED GAP EXTENSIONS (Rules 1, 2, 3, 5, 7)
+        # =====================================================================
+
+        # 13. Safe PowerShell Test-Path (Rule 1)
+        PolicyRule(
+            id="allow-powershell-test-path",
+            description="Safe PowerShell Test-Path query on workspace or standard installation prefixes",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^Test-Path\s+'
+                r'(?:-(?:Path|LiteralPath)\s+)?'
+                r'(?:'
+                r'"[^"\r\n*?<>|]+"'
+                r"|'[^'\r\n*?<>|]+'"
+                r'|[^\s;&|`$(){}<>*?]+'
+                r')'
+                r'(?:\s+-(?:PathType\s+(?:Leaf|Container|Any)|ErrorAction\s+[a-zA-Z]+|EA\s+[a-zA-Z]+))*$'
+            ),
+        ),
+
+        # 14. Safe PowerShell Copy-Item in Workspace (Rule 2)
+        PolicyRule(
+            id="allow-powershell-copy-item",
+            description="Safe PowerShell Copy-Item strictly within workspace without -Force or -Recurse",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^(?:Copy-Item|cpi)\s+'
+                r'(?:'
+                r'(?!-(?:[fF](?:orce)?|[rR](?:ecurse)?|[cC]onfirm:\$false)\b)'
+                r'(?:-(?:Path|Destination|LiteralPath|PassThru)\b|-[a-zA-Z0-9_\-]+|"[^"\r\n*?<>|]+"|\'[^\'\r\n*?<>|]+\'|[^\s;&|`$(){}<>*?]+)'
+                r'(?:\s+|$)'
+                r')+$'
+            ),
+        ),
+
+        # 15. Safe PowerShell Get-Process Inspection (Rule 3)
+        PolicyRule(
+            id="allow-powershell-get-process",
+            description="Safe PowerShell Get-Process query piped to safe formatting/selection sinks or property access",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^(?:\(?\s*Get-Process\b'
+                r'(?![^|\r\n]*?(?:-(?:wait)\b))'
+                r'[^|$(){}\@;&><\`\r\n]*'
+                r'(?:\)\.[a-zA-Z0-9_\-]+)?'
+                r')'
+                r'(?:\s*\|\s*(?:Select-String|Select-Object|Sort-Object|Measure-Object|Out-String|Format-Table|Format-List|Format-Wide|Format-Custom|Where-Object|\?|where)'
+                r'(?![^|\r\n]*?(?:-(?:wait)\b))'
+                r'[^|;&><\`\r\n]*)*$'
+            ),
+        ),
+
+        # 16. Safe Tool Help Queries (Rule 5)
+        PolicyRule(
+            id="allow-tool-help",
+            description="Safe informational help queries for bare commands on system PATH",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^(?:'
+                r'([a-zA-Z0-9_\-]+)\s+(--help|-h|help)'
+                r'|'
+                r'help\s+([a-zA-Z0-9_\-]+)'
+                r')'
+                r'(?:\s+2>&1)?$'
+            ),
+        ),
+
+        # 17. Safe Local Git Commit (Rule 7)
+        PolicyRule(
+            id="allow-git-commit",
+            description="Safe local git commit strictly without hooks, amending, or signing flags",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^git'
+                r'(?:\s+(?:--no-pager|(?-i:-C)\s+[^\s;&|`$(){}<>]+))*\s+'
+                r'commit'
+                r'(?:\s+-(?:q|-(?:quiet)))?'
+                r'\s+-m\s+(?:(?:"[^"\r\n]*"|\'[^\'\r\n]*\')|[a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+)*)'
+                r'(?:\s+-(?:q|-(?:quiet)))?$'
+            ),
+        ),
+
+        # 18. Safe PowerShell Write-Output (Pure string literals)
+        PolicyRule(
+            id="allow-powershell-write-output",
+            description="Safe PowerShell Write-Output of pure string literals without redirection, pipes, or expansions",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^Write-Output\s+'
+                r'(?:'
+                r'"[^"$`\r\n]*"'
+                r"|'[^'\r\n]*'"
+                r'|[a-zA-Z0-9_\-\.]+'
+                r')'
+                r'(?:\s+'
+                r'(?:'
+                r'"[^"$`\r\n]*"'
+                r"|'[^'\r\n]*'"
+                r'|[a-zA-Z0-9_\-\.]+'
+                r'))*$'
+            ),
+        ),
+
+        # 19. Safe PowerShell New-Item Directory in Workspace
+        PolicyRule(
+            id="allow-powershell-new-item-dir",
+            description="Safe PowerShell New-Item directory creation strictly contained in workspace",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^New-Item\s+'
+                r'(?=.*-(?:ItemType|Type)\s+Directory\b)'
+                r'(?!.*-(?:Target|Value|Force)\b)'
+                r'(?:'
+                r'-(?:ItemType|Type)\s+Directory\b'
+                r'|-(?:Path|Name)\s+(?:"[^"$`\r\n*?<>|]+"|\'[^\'\r\n*?<>|]+\'|[^\s;&|`$(){}<>*?]+)'
+                r'|"[^"$`\r\n*?<>|]+"'
+                r"|'[^'\r\n*?<>|]+'"
+                r'|[^\s;&|`$(){}<>*?]+'
+                r')'
+                r'(?:\s+'
+                r'(?:'
+                r'-(?:ItemType|Type)\s+Directory\b'
+                r'|-(?:Path|Name)\s+(?:"[^"$`\r\n*?<>|]+"|\'[^\'\r\n*?<>|]+\'|[^\s;&|`$(){}<>*?]+)'
+                r'|"[^"$`\r\n*?<>|]+"'
+                r"|'[^'\r\n*?<>|]+'"
+                r'|[^\s;&|`$(){}<>*?]+'
+                r'))*$'
+            ),
+        ),
+
+        # 20. Safe Python Pip Inspection
+        PolicyRule(
+            id="allow-python-pip-inspect",
+            description="Safe read-only python -m pip show/list/--version queries",
+            verdict=PolicyVerdict.ALLOW,
+            tools=["run_command"],
+            field="CommandLine",
+            pattern=(
+                r'^(?:python|python3|py)\s+-m\s+pip\s+'
+                r'(?:'
+                r'show(?:\s+(?:-[a-zA-Z0-9_\-]+(?:=[a-zA-Z0-9_\-]+)?|[a-zA-Z0-9_\-\.]+))+'
+                r'|list(?:\s+-[a-zA-Z0-9_\-]+(?:=[a-zA-Z0-9_\-]+)?)*'
+                r'|--version|-V'
+                r')$'
             ),
         ),
     ]

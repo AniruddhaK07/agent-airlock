@@ -13,7 +13,7 @@ import sys
 import os
 from pathlib import Path
 
-from agent_airlock.config import GatewayConfig, DaemonConfig, AuditConfig
+from agent_airlock.config import GatewayConfig, DaemonConfig, AuditConfig, JevConfig, JevThresholdsConfig
 from agent_airlock.daemon.server import DaemonServer
 from agent_airlock.daemon.pid import PIDManager
 from agent_airlock.hooks.stub_client import StubHookClient
@@ -556,6 +556,10 @@ asyncio.run(server.run_forever())
             ),
             audit=AuditConfig(
                 log_file=str(tmp_path / "test-audit.jsonl"),
+            ),
+            jev=JevConfig(
+                allow_authority=True,
+                thresholds=JevThresholdsConfig(allow_authority=True),
             ),
         )
 

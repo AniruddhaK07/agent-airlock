@@ -48,7 +48,7 @@ class TestLocalLayaIntegration(unittest.IsolatedAsyncioTestCase):
         if not Path(DEFAULT_CHECKPOINT).exists():
             raise unittest.SkipTest(f"Checkpoint not found at {DEFAULT_CHECKPOINT}")
         cls.client = LocalLayaClient(checkpoint_path=DEFAULT_CHECKPOINT)
-        cls.evaluator = JevEvaluator(thresholds=JevThresholdsConfig())
+        cls.evaluator = JevEvaluator(thresholds=JevThresholdsConfig(allow_authority=True), allow_authority=True)
 
     def test_checkpoint_direct_load(self):
         """Verifies checkpoint loaded directly and agent is resident."""

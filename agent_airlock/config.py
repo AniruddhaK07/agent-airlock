@@ -35,6 +35,7 @@ class DaemonConfig(BaseModel):
     log_level: str = "INFO"
 
 class JevThresholdsConfig(BaseModel):
+    allow_authority: bool = False
     allow_confidence: float = 0.90
     deny_confidence: float = 0.85
     max_safe_blast_radius: float = 2.0
@@ -49,6 +50,7 @@ class JevConfig(BaseModel):
     api_key_env: str = "TYPESAFE_API_KEY"
     base_url: str = "https://api.typesafe.ai/v1"
     timeout_seconds: float = 0.400
+    allow_authority: bool = False
     thresholds: JevThresholdsConfig = Field(default_factory=JevThresholdsConfig)
 
 class CircuitBreakerConfig(BaseModel):
@@ -66,6 +68,7 @@ class AuditConfig(BaseModel):
 
 class DecisionCacheConfig(BaseModel):
     enabled: bool = True
+    mode: str = "strict"
     ttl_seconds: int = 3600
     max_entries: int = 2048
     trust_root_files: List[str] = Field(default_factory=lambda: [

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import hashlib
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -67,13 +68,38 @@ class DecisionCache:
         ttl_seconds: int = 3600,
         max_entries: int = 2048,
         trust_root_files: Optional[List[str]] = None,
+        mode: str = "strict",
     ):
+        if mode != "strict":
+            raise ValueError(f"Only 'strict' decision cache mode is supported in Agent Airlock 1.1; received '{mode}'.")
         self.enabled = enabled
+        self.mode = "strict"
         self.ttl_seconds = ttl_seconds
         self.max_entries = max_entries
         self.trust_root_files = list(trust_root_files) if trust_root_files else list(DEFAULT_TRUST_ROOT_FILES)
         self._cache: OrderedDict[str, CachedDecision] = OrderedDict()
         self._epoch_bumps: Dict[str, int] = {}
+
+    @staticmethod
+    def is_never_cacheable(tool_name: str, target: str) -> bool:
+        """
+        Commands that may never be cached under any circumstances:
+        push, install, network, inline interpreter scripts, delete.
+        """
+        if tool_name != "run_command":
+            return False
+        s = target.strip().lower()
+        if re.search(r'\b(?:python[23]?|python\.exe)\s+(?:-w\s+\S+\s+)?-c\b|\b(?:node|node\.exe)\s+(?:-e|--eval)\b|\bperl(?:\.exe)?\s+-e\b|\bruby(?:\.exe)?\s+-e\b', s, re.IGNORECASE):
+            return True
+        if re.search(r'\bgit\s+(?:push\b|send-email\b)', s, re.IGNORECASE):
+            return True
+        if re.search(r'\b(?:npm\s+i\b|npm\s+install\b|pip[23]?\s+install\b|yarn\s+add\b|pnpm\s+add\b|cargo\s+install\b|gem\s+install\b)', s, re.IGNORECASE):
+            return True
+        if re.search(r'\b(?:curl|wget|ssh|scp|sftp|ftp|telnet|nc|netcat|nmap|ping)\b', s, re.IGNORECASE):
+            return True
+        if re.search(r'\b(?:rm\s|rmdir|del\s|erase\s|remove-item\b|git\s+rm\b|git\s+branch\s+-[dD]\b|git\s+clean\b)', s, re.IGNORECASE):
+            return True
+        return False
 
     def normalize_target(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
         """Normalizes the target command or file argument for exact key calculation."""
@@ -209,6 +235,12 @@ class DecisionCache:
 
         # Invariant: Never cache fallback or error decisions
         if source in ("fallback", "error", "unknown"):
+            return None
+
+        # Invariant: Never-cacheable classes (push, install, network, inline scripts, delete)
+        if self.is_never_cacheable(tool_name, normalized_target):
+            return None
+        if extra and self.is_never_cacheable(tool_name, str(extra.get("raw_cmd", ""))):
             return None
 
         if trust_epoch is None:

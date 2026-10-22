@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 import time
 import uuid
 import logging
@@ -507,12 +508,28 @@ class IPCRouter:
                     jev_decision = self.jev_evaluator.decide(
                         evaluation=evaluation,
                         latency_ms=latency,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        rule_id=policy_result.rule_id,
+                        raw_cmd=raw_cmd,
                     )
                     dec_val = (
                         jev_decision.decision.value
                         if hasattr(jev_decision.decision, "value")
                         else str(jev_decision.decision)
                     )
+                    # Defense-in-depth: inline interpreter scripts or dangerous constructs may NEVER be allowed by L3
+                    if dec_val == "allow":
+                        from agent_airlock.policy.engine import HardPolicyEngine
+                        if (
+                            policy_result.rule_id in ("inline-script-execution", "dangerous-construct-requires-confirmation")
+                            or (raw_cmd and HardPolicyEngine._is_inline_script(raw_cmd))
+                        ):
+                            dec_val = "ask"
+                            jev_decision.reason = (
+                                "Inline interpreter scripts (-c/-e) and dangerous constructs are strictly human confirmation only; "
+                                "L3 auto-allow prohibited."
+                            )
                     total_latency = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
@@ -666,13 +683,21 @@ class IPCRouter:
                 step_idx=step_idx,
             )
 
-        # Invalidate trust epoch if a trust-root file was written/replaced
+        # STRICT mode cache invalidation: invalidated by ANY workspace write/edit, git state change, or trust-root change
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
-        if tool_name in ("write_to_file", "replace_file_content") and self.decision_cache:
-            target_file = tool_args.get("TargetFile") or tool_args.get("target_file") or tool_args.get("path") or ""
-            target_name = Path(target_file).name.lower()
-            if any(target_name == tf.lower() for tf in self.decision_cache.trust_root_files):
+        if self.decision_cache and self.decision_cache.enabled:
+            should_invalidate = False
+            if tool_name in ("write_to_file", "replace_file_content"):
+                should_invalidate = True
+            elif tool_name == "run_command":
+                cmd_raw = tool_args.get("CommandLine", "") or tool_args.get("command", "") or ""
+                cmd_low = cmd_raw.strip().lower()
+                if re.search(r'\bgit\s+(?:checkout|commit|merge|rebase|reset|switch|pull|stash|apply|cherry-pick)\b', cmd_low):
+                    should_invalidate = True
+                elif re.search(r'(?<!2)>|\b>\b|>>|\|\s*(?:Set-Content|Out-File)\b|\b(?:touch|mkdir|cp|copy|mv|move|Copy-Item|Move-Item|New-Item|rm|rmdir|del|erase|Remove-Item)\b', cmd_raw, re.IGNORECASE):
+                    should_invalidate = True
+            if should_invalidate:
                 self.decision_cache.invalidate_trust_epoch(ws_state.workspace_root)
 
         latency_ms = (time.perf_counter() - t_start) * 1000.0

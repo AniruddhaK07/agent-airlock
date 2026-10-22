@@ -4,9 +4,11 @@ Hard Policy Engine: Deterministic rule engine for Antigravity CLI tool gating.
 
 import os
 import re
+import shlex
+import shutil
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 from agent_airlock.policy.models import PolicyVerdict, PolicyRule, PolicyResult
 from agent_airlock.policy.default_rules import get_default_rules
 from agent_airlock.policy.normalizer import (
@@ -29,12 +31,21 @@ TRUST_ROOT_FILES = {
     ".airlock-policy.yaml"
 }
 
+_RUNNING_PKG_DIR = Path(__file__).resolve().parent.parent.name
+
 DISALLOWED_DIRS_WORKSPACE_WRITE = {
-    ".vscode", ".github", ".husky", ".agents", ".git", ".ssh", ".aws", ".kube", ".gemini", "agent_airlock"
+    ".vscode", ".github", ".husky", ".agents", ".git", ".ssh", ".aws", ".kube", ".gemini", _RUNNING_PKG_DIR
+}
+
+KNOWN_HELP_TOOLS = {
+    "agy", "git", "python", "python3", "node", "npm", "npx", "yarn", "pnpm",
+    "cargo", "rustc", "go", "pytest", "ruff", "black", "docker", "pip", "pip3", "tsc"
 }
 
 _REALPATH_CACHE: Dict[Tuple[str, str, bool], Tuple[bool, float]] = {}
 _CACHE_TTL: float = 2.0
+_GIT_HOOKS_CACHE: Dict[str, Tuple[bool, float]] = {}
+_GIT_HOOKS_CACHE_TTL: float = 30.0
 
 class HardPolicyEngine:
     """
@@ -43,11 +54,17 @@ class HardPolicyEngine:
     Guarantees zero false negatives on hard-deny rules.
     """
 
-    def __init__(self, rules: Optional[List[PolicyRule]] = None, use_prefilters: bool = True):
+    def __init__(
+        self,
+        rules: Optional[List[PolicyRule]] = None,
+        use_prefilters: bool = True,
+        protected_dirs: Optional[Set[str]] = None,
+    ):
         if rules is None:
             rules = get_default_rules()
         self.rules = rules
         self.use_prefilters = use_prefilters
+        self._protected_dirs = set(DISALLOWED_DIRS_WORKSPACE_WRITE) | (set(protected_dirs) if protected_dirs else set())
         self._deny_rules: List[PolicyRule] = [r for r in rules if r.verdict == PolicyVerdict.DENY]
         self._allow_rules: List[PolicyRule] = [r for r in rules if r.verdict == PolicyVerdict.ALLOW]
         import hashlib
@@ -186,14 +203,23 @@ class HardPolicyEngine:
         # An oversized command (>4096 chars) must NEVER be ALLOW at any layer.
         if len(raw_arg) > 4096 or len(raw_cmd) > 4096:
             raw_cmd_lower = raw_cmd.lower()
-            norm_lower = normalize_command(raw_cmd).lower()
+            norm_lower = None
             for rule in self._deny_rules:
                 if self._rule_applies_to_tool(rule, "run_command"):
                     if self.use_prefilters:
                         prefilter = self.DENY_RULE_PREFILTERS.get(rule.id)
-                        if prefilter and not (prefilter(raw_cmd, raw_cmd_lower) or prefilter(norm_lower, norm_lower)):
+                        if prefilter and not prefilter(raw_cmd, raw_cmd_lower):
                             continue
-                    if rule.compiled.search(raw_cmd) or rule.compiled.search(norm_lower):
+                    if rule.compiled.search(raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.DENY,
+                            rule_id=rule.id,
+                            reason=f"Hard Deny: {rule.description}",
+                            matched_pattern=rule.pattern,
+                        )
+                    if norm_lower is None:
+                        norm_lower = normalize_command(raw_cmd).lower()
+                    if rule.compiled.search(norm_lower):
                         return PolicyResult(
                             verdict=PolicyVerdict.DENY,
                             rule_id=rule.id,
@@ -321,7 +347,7 @@ class HardPolicyEngine:
 
         # Reject dangerous constructs that cannot be statically proven safe in L1:
         # ||, single &, backticks, $(...), @(...), ForEach-Object / %
-        if re.search(r'\|\||(?<!&)&(?![&>])|`|\$\(|\@\(|\b(?:ForEach-Object|foreach)\b|\|\s*%', raw_cmd, re.IGNORECASE):
+        if re.search(r'\|\||(?<![&>])&(?![&>0-9])|`|\$\(|\@\(|\b(?:ForEach-Object|foreach)\b|\|\s*%', raw_cmd, re.IGNORECASE):
             return PolicyResult(
                 verdict=PolicyVerdict.AMBIGUOUS,
                 rule_id="dangerous-construct-requires-confirmation",
@@ -382,12 +408,12 @@ class HardPolicyEngine:
             if not self._rule_applies_to_tool(rule, "run_command"):
                 continue
 
-            # If the command contains pipes, ONLY allow-powershell-readonly is permitted to evaluate it
-            if self._has_unquoted_pipe(raw_cmd) and rule.id != "allow-powershell-readonly":
+            # If the command contains pipes, ONLY allow-powershell-readonly and allow-powershell-get-process are permitted to evaluate it
+            if self._has_unquoted_pipe(raw_cmd) and rule.id not in ("allow-powershell-readonly", "allow-powershell-get-process"):
                 continue
 
-            # For allow-powershell-readonly, mask quoted pipes so regex matches argument literals without misinterpreting shell sinks
-            target_to_match = self._mask_pipes_in_quotes(clean_scrubbed_cmd) if rule.id == "allow-powershell-readonly" else (clean_scrubbed_cmd if shlex_cmd else clean_norm_cmd)
+            # For allow-powershell-readonly and allow-powershell-get-process, mask quoted pipes so regex matches argument literals without misinterpreting shell sinks
+            target_to_match = self._mask_pipes_in_quotes(clean_scrubbed_cmd) if rule.id in ("allow-powershell-readonly", "allow-powershell-get-process") else (clean_scrubbed_cmd if shlex_cmd else clean_norm_cmd)
             if rule.compiled.search(target_to_match):
                 # Extra check: make sure the command does not touch secret files
                 if self._touches_credentials(target_to_match) or self._touches_credentials(clean_norm_cmd) or self._touches_credentials(raw_cmd):
@@ -427,41 +453,77 @@ class HardPolicyEngine:
                                 )
 
                     # Validate all path arguments resolve inside workspace_root
-                    tokens_to_check = raw_cmd.split()
-                    after_double_dash = False
+                    try:
+                        tokens_to_check = shlex.split(raw_cmd, posix=False)
+                    except Exception:
+                        tokens_to_check = raw_cmd.split()
+
                     for i, tok in enumerate(tokens_to_check):
-                        if tok == "--":
-                            after_double_dash = True
-                            continue
                         if tok.startswith("-C"):
                             c_p = tokens_to_check[i + 1] if tok == "-C" and i + 1 < len(tokens_to_check) else tok[2:]
+                            c_p = c_p.strip("'\"")
                             if not self._is_path_contained_in_workspace(c_p, workspace_root):
                                 return PolicyResult(
                                     verdict=PolicyVerdict.AMBIGUOUS,
                                     rule_id="git-external-path-requires-confirmation",
                                     reason=f"Git -C path '{c_p}' is outside workspace root; falls through to human confirmation.",
                                 )
-                            continue
-                        if after_double_dash:
-                            if not self._is_path_contained_in_workspace(tok, workspace_root):
-                                return PolicyResult(
-                                    verdict=PolicyVerdict.AMBIGUOUS,
-                                    rule_id="git-external-path-requires-confirmation",
-                                    reason=f"Git path '{tok}' is outside workspace root; falls through to human confirmation.",
-                                )
-                        else:
-                            if "/" in tok or "\\" in tok or tok.startswith(".."):
-                                if tok.startswith("-"):
-                                    continue
-                                target_p = tok
-                                if ":" in target_p and not (len(target_p) >= 2 and target_p[1] == ":" and target_p[0].isalpha()):
-                                    target_p = target_p.split(":", 1)[1]
-                                if not self._is_path_contained_in_workspace(target_p, workspace_root):
-                                    return PolicyResult(
-                                        verdict=PolicyVerdict.AMBIGUOUS,
-                                        rule_id="git-external-path-requires-confirmation",
-                                        reason=f"Git path '{target_p}' is outside workspace root; falls through to human confirmation.",
-                                    )
+
+                    paths_to_check = []
+                    if rule.id == "allow-git-grep":
+                        grep_idx = 0
+                        for idx, tok in enumerate(tokens_to_check):
+                            if tok.lower() == "grep":
+                                grep_idx = idx
+                                break
+                        args = tokens_to_check[grep_idx + 1:]
+                        pattern_seen = False
+                        skip_next = False
+                        after_double_dash = False
+                        for t in args:
+                            if skip_next:
+                                skip_next = False
+                                continue
+                            if t == "--":
+                                after_double_dash = True
+                                continue
+                            if after_double_dash:
+                                paths_to_check.append(t.strip("'\""))
+                                continue
+                            if t.startswith("-"):
+                                t_low = t.lower()
+                                if t_low == "-e":
+                                    skip_next = True
+                                    pattern_seen = True
+                                elif t_low in ("-c", "-a", "-b", "--context"):
+                                    skip_next = True
+                                continue
+                            if not pattern_seen:
+                                pattern_seen = True
+                            else:
+                                paths_to_check.append(t.strip("'\""))
+                    else:
+                        after_double_dash = False
+                        for tok in tokens_to_check:
+                            if tok == "--":
+                                after_double_dash = True
+                                continue
+                            if after_double_dash:
+                                paths_to_check.append(tok.strip("'\""))
+                            elif "/" in tok or "\\" in tok or tok.startswith(".."):
+                                if not tok.startswith("-"):
+                                    target_p = tok.strip("'\"")
+                                    if ":" in target_p and not (len(target_p) >= 2 and target_p[1] == ":" and target_p[0].isalpha()):
+                                        target_p = target_p.split(":", 1)[1]
+                                    paths_to_check.append(target_p)
+
+                    for p in paths_to_check:
+                        if not self._is_path_contained_in_workspace(p, workspace_root):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="git-external-path-requires-confirmation",
+                                reason=f"Git path '{p}' is outside workspace root; falls through to human confirmation.",
+                            )
 
                 # Family D guard: git branch list must not delete or rename branches
                 if rule.id == "allow-git-branch-list":
@@ -604,6 +666,306 @@ class HardPolicyEngine:
                                 reason=f"PowerShell positional path '{target_p}' is outside workspace root; falls through to human confirmation.",
                             )
 
+                # Approved Gap Rule 1: Test-Path binary/system discovery
+                if rule.id == "allow-powershell-test-path":
+                    toks = []
+                    try:
+                        toks = shlex.split(raw_cmd, posix=False)
+                    except Exception:
+                        toks = raw_cmd.split()
+                    target_p = None
+                    skip = False
+                    for i, t in enumerate(toks[1:], 1):
+                        if skip:
+                            skip = False
+                            continue
+                        t_low = t.lower()
+                        if t_low in ("-path", "-literalpath"):
+                            if i + 1 < len(toks):
+                                target_p = toks[i + 1]
+                                skip = True
+                        elif t_low.startswith("-"):
+                            if t_low in ("-pathtype", "-erroraction", "-ea"):
+                                skip = True
+                            continue
+                        elif target_p is None:
+                            target_p = t
+
+                    if not target_p:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="test-path-missing-argument",
+                            reason="Test-Path without path argument requires human confirmation.",
+                        )
+                    clean_path = target_p.strip("'\"")
+                    # Rejects wildcards
+                    if any(c in clean_path for c in ("*", "?", "[", "]")):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="test-path-wildcards-disallowed",
+                            reason="Test-Path with wildcards requires human confirmation.",
+                        )
+                    # Rejects UNC paths
+                    if clean_path.startswith(r"\\") or clean_path.startswith("//"):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="test-path-unc-disallowed",
+                            reason="Test-Path targeting UNC network paths requires human confirmation.",
+                        )
+                    # Rejects reparse points (symlinks/junctions)
+                    try:
+                        p_obj = Path(clean_path)
+                        if p_obj.exists() and (p_obj.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(clean_path))):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="test-path-reparse-point-disallowed",
+                                reason="Test-Path on reparse points (symlinks/junctions) requires human confirmation.",
+                            )
+                    except Exception:
+                        pass
+                    # Permits workspace paths or standard installation prefixes (C:\Program Files*)
+                    in_workspace = self._is_path_contained_in_workspace(clean_path, workspace_root)
+                    norm_clean = os.path.normpath(clean_path)
+                    is_install_prefix = bool(re.match(r'^[a-zA-Z]:[/\\]Program Files(?:\s*\(x86\))?[/\\]', norm_clean, re.IGNORECASE))
+                    if not (in_workspace or is_install_prefix):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="test-path-outside-workspace-or-install-prefix",
+                            reason=f"Test-Path path '{clean_path}' is outside workspace and not a standard installation prefix; requires human confirmation.",
+                        )
+
+                # Approved Gap Rule 2: Copy-Item in workspace
+                if rule.id == "allow-powershell-copy-item":
+                    toks = []
+                    try:
+                        toks = shlex.split(raw_cmd, posix=False)
+                    except Exception:
+                        toks = raw_cmd.split()
+                    # Rejects -Force, -Recurse, -Confirm:$false
+                    for t in toks[1:]:
+                        t_low = t.lower()
+                        if t_low in ("-force", "-f", "-recurse", "-r", "-confirm:$false"):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="copy-item-force-recurse-disallowed",
+                                reason="Copy-Item with -Force or -Recurse requires human confirmation.",
+                            )
+                    src_p = None
+                    dst_p = None
+                    skip = False
+                    for i, t in enumerate(toks[1:], 1):
+                        if skip:
+                            skip = False
+                            continue
+                        t_low = t.lower()
+                        if t_low in ("-path", "-literalpath"):
+                            if i + 1 < len(toks):
+                                src_p = toks[i + 1]
+                                skip = True
+                        elif t_low in ("-destination", "-dest"):
+                            if i + 1 < len(toks):
+                                dst_p = toks[i + 1]
+                                skip = True
+                        elif t.startswith("-"):
+                            continue
+                        else:
+                            if src_p is None:
+                                src_p = t
+                            elif dst_p is None:
+                                dst_p = t
+
+                    if not src_p or not dst_p:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="copy-item-missing-paths",
+                            reason="Copy-Item requires explicit source and destination paths.",
+                        )
+                    clean_src = src_p.strip("'\"")
+                    clean_dst = dst_p.strip("'\"")
+                    if any(c in clean_src or c in clean_dst for c in ("*", "?", "[", "]")):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="copy-item-wildcards-disallowed",
+                            reason="Copy-Item with wildcards requires human confirmation.",
+                        )
+                    if clean_src.startswith(r"\\") or clean_src.startswith("//") or clean_dst.startswith(r"\\") or clean_dst.startswith("//"):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="copy-item-unc-disallowed",
+                            reason="Copy-Item on UNC network paths requires human confirmation.",
+                        )
+                    if not self._is_path_contained_in_workspace(clean_src, workspace_root):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="copy-item-source-outside-workspace",
+                            reason=f"Copy-Item source '{clean_src}' is outside workspace root; requires human confirmation.",
+                        )
+                    target_dest_file = clean_dst
+                    if clean_dst.endswith(("/", "\\")) or (workspace_root and os.path.isdir(os.path.join(workspace_root, clean_dst))):
+                        target_dest_file = os.path.join(clean_dst, os.path.basename(clean_src))
+                    if not self._check_workspace_write_allowed(target_dest_file, workspace_root):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="copy-item-destination-sensitive-or-outside",
+                            reason=f"Copy-Item destination '{clean_dst}' targets a sensitive, trust-root, or external path; requires human confirmation.",
+                        )
+
+                # Approved Gap Rule 3: Get-Process inspection
+                if rule.id == "allow-powershell-get-process":
+                    if re.search(r'\b(?:Stop-Process|Kill|Start-Process)\b|-(?:wait)\b|\{|\}', raw_cmd, re.I):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="get-process-mutating-disallowed",
+                            reason="Get-Process with mutating cmdlets, scriptblocks, or -Wait requires human confirmation.",
+                        )
+
+                # Approved Gap Rule 5: Tool help queries
+                if rule.id == "allow-tool-help":
+                    clean_help_cmd = re.sub(r'\s*2>&1\s*$', '', raw_cmd.strip())
+                    if re.search(r'[;&|`$(){}>]', clean_help_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="tool-help-chaining-or-pipe-disallowed",
+                            reason="Tool help query with chaining, piping, or file redirection requires human confirmation.",
+                        )
+                    m_help = re.match(r'^(?:([a-zA-Z0-9_\-]+)\s+(?:--help|-h|help)|help\s+([a-zA-Z0-9_\-]+))(?:\s+2>&1)?$', raw_cmd.strip(), re.I)
+                    if not m_help:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="tool-help-malformed",
+                            reason="Malformed tool help query requires human confirmation.",
+                        )
+                    tool_bin = (m_help.group(1) or m_help.group(2)).lower()
+                    if "/" in tool_bin or "\\" in tool_bin:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="tool-help-path-separator-disallowed",
+                            reason=f"Tool help with path separator ('{tool_bin}') requires human confirmation; bare command name required.",
+                        )
+                    if tool_bin not in KNOWN_HELP_TOOLS:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="tool-help-unknown-tool",
+                            reason=f"Tool '{tool_bin}' is not in the known tool help allowlist; requires human confirmation.",
+                        )
+                    if not shutil.which(tool_bin):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="tool-help-not-on-path",
+                            reason=f"Tool '{tool_bin}' does not resolve to an executable on system PATH; requires human confirmation.",
+                        )
+
+                # Approved Gap Rule 7: Local git commit in workspace
+                if rule.id == "allow-git-commit":
+                    if re.search(r'-(?:a\b|F\b|S\b|c\b|C\b|-(?:all|amend|file|gpg-sign|reedit-message|reuse-message|author|date|no-verify|fixup|squash)\b)', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-commit-disallowed-flags",
+                            reason="Git commit with modifying/signing/bypass flags (-a, --amend, -F, -S, -c, --author, --no-verify) requires human confirmation.",
+                        )
+                    tokens_to_check = raw_cmd.split()
+                    for i, tok in enumerate(tokens_to_check):
+                        if tok.startswith("-C"):
+                            c_p = tokens_to_check[i + 1] if tok == "-C" and i + 1 < len(tokens_to_check) else tok[2:]
+                            if not self._is_path_contained_in_workspace(c_p, workspace_root):
+                                return PolicyResult(
+                                    verdict=PolicyVerdict.AMBIGUOUS,
+                                    rule_id="git-external-path-requires-confirmation",
+                                    reason=f"Git -C path '{c_p}' is outside workspace root; falls through to human confirmation.",
+                                )
+                    if self._has_active_git_hooks(workspace_root):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="git-active-hooks-require-confirmation",
+                            reason="Git repository has active hooks or core.hooksPath configured; requires human confirmation.",
+                        )
+
+                # Approved Gap Rule: Write-Output of pure string literals
+                if rule.id == "allow-powershell-write-output":
+                    if re.search(r'[;&|`$(){}>]', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="write-output-chaining-or-redirection-disallowed",
+                            reason="Write-Output with command chaining, redirection, or expansions requires human confirmation.",
+                        )
+
+                # Approved Gap Rule: New-Item Directory in workspace
+                if rule.id == "allow-powershell-new-item-dir":
+                    try:
+                        toks = shlex.split(raw_cmd, posix=False)
+                    except Exception:
+                        toks = raw_cmd.split()
+                    target_p = None
+                    skip = False
+                    for i, t in enumerate(toks[1:], 1):
+                        if skip:
+                            skip = False
+                            continue
+                        t_low = t.lower()
+                        if t_low in ("-itemtype", "-type"):
+                            skip = True
+                            continue
+                        if t_low in ("-path", "-name"):
+                            if i + 1 < len(toks):
+                                target_p = toks[i + 1]
+                                skip = True
+                            continue
+                        if not t.startswith("-") and target_p is None:
+                            target_p = t
+                    if not target_p:
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="new-item-dir-missing-path",
+                            reason="New-Item Directory without path argument requires human confirmation.",
+                        )
+                    clean_p = target_p.strip("'\"")
+                    if any(c in clean_p for c in ("*", "?", "[", "]")):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="new-item-dir-wildcard-disallowed",
+                            reason="New-Item Directory with wildcards requires human confirmation.",
+                        )
+                    if clean_p.startswith(r"\\") or clean_p.startswith("//"):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="new-item-dir-unc-disallowed",
+                            reason="New-Item Directory targeting UNC path requires human confirmation.",
+                        )
+                    norm_p = os.path.normpath(clean_p)
+                    parts = [part.lower() for part in norm_p.replace("\\", "/").split("/")]
+                    sensitive_dir_names = {".git", ".agents", ".vscode", ".ssh", ".aws", ".azure", ".gnupg"}
+                    if any(part in sensitive_dir_names for part in parts):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="new-item-dir-sensitive-name-disallowed",
+                            reason=f"New-Item Directory targeting sensitive folder name in '{clean_p}' requires human confirmation.",
+                        )
+                    try:
+                        p_obj = Path(clean_p)
+                        if p_obj.exists() and (p_obj.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(clean_p))):
+                            return PolicyResult(
+                                verdict=PolicyVerdict.AMBIGUOUS,
+                                rule_id="new-item-dir-reparse-point-disallowed",
+                                reason="New-Item Directory on existing symlink or junction requires human confirmation.",
+                            )
+                    except Exception:
+                        pass
+                    if not self._is_path_contained_in_workspace(clean_p, workspace_root):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="new-item-dir-outside-workspace",
+                            reason=f"New-Item Directory path '{clean_p}' is outside workspace root; requires human confirmation.",
+                        )
+
+                # Approved Gap Rule: python -m pip inspect
+                if rule.id == "allow-python-pip-inspect":
+                    if re.search(r'[;&|`$(){}>]', raw_cmd):
+                        return PolicyResult(
+                            verdict=PolicyVerdict.AMBIGUOUS,
+                            rule_id="pip-inspect-chaining-disallowed",
+                            reason="Pip inspection query with chaining or redirection requires human confirmation.",
+                        )
+
                 return PolicyResult(
                     verdict=PolicyVerdict.ALLOW,
                     rule_id=rule.id,
@@ -611,7 +973,7 @@ class HardPolicyEngine:
                     matched_pattern=rule.pattern,
                 )
 
-        # Any pipeline command that did not match allow-powershell-readonly is ambiguous
+        # Any pipeline command that did not match allow-powershell-readonly or allow-powershell-get-process is ambiguous
         if self._has_unquoted_pipe(raw_cmd):
             return PolicyResult(
                 verdict=PolicyVerdict.AMBIGUOUS,
@@ -679,6 +1041,49 @@ class HardPolicyEngine:
             verdict=PolicyVerdict.AMBIGUOUS,
             reason=f"File mutation via {tool_name} requires confirmation or blast-radius assessment; falls through to Jev.",
         )
+
+    def _has_active_git_hooks(self, workspace_root: Optional[str]) -> bool:
+        """
+        Checks whether repository has active hooks in .git/hooks or core.hooksPath configured.
+        Cached with short TTL (30s).
+        """
+        if not workspace_root:
+            return True  # Fail closed to AMBIGUOUS if workspace unknown
+        now = time.time()
+        cached = _GIT_HOOKS_CACHE.get(workspace_root)
+        if cached and (now - cached[1]) < _GIT_HOOKS_CACHE_TTL:
+            return cached[0]
+
+        has_hooks = False
+        try:
+            ws_path = Path(workspace_root)
+            git_dir = ws_path / ".git"
+            if not git_dir.is_dir():
+                if git_dir.is_file():
+                    content = git_dir.read_text(encoding="utf-8", errors="ignore").strip()
+                    if content.startswith("gitdir:"):
+                        git_dir = Path(content[7:].strip())
+                        if not git_dir.is_absolute():
+                            git_dir = (ws_path / git_dir).resolve()
+
+            git_config = git_dir / "config"
+            if git_config.is_file():
+                config_text = git_config.read_text(encoding="utf-8", errors="ignore")
+                if re.search(r'^\s*hookspath\s*=', config_text, re.MULTILINE | re.IGNORECASE):
+                    has_hooks = True
+
+            if not has_hooks:
+                hooks_dir = git_dir / "hooks"
+                if hooks_dir.is_dir():
+                    for entry in hooks_dir.iterdir():
+                        if entry.is_file() and not entry.name.endswith(".sample"):
+                            has_hooks = True
+                            break
+        except Exception:
+            has_hooks = True  # Fail closed on error
+
+        _GIT_HOOKS_CACHE[workspace_root] = (has_hooks, now)
+        return has_hooks
 
     def _is_dangerous_workspace_root(self, ws_str: str) -> bool:
         if not ws_str:
@@ -1176,8 +1581,9 @@ class HardPolicyEngine:
                 rel_parts = [p.lower() for p in Path(rel).parts]
                 filename = rel_parts[-1]
 
+                disallowed = getattr(self, '_protected_dirs', DISALLOWED_DIRS_WORKSPACE_WRITE)
                 for part in rel_parts[:-1]:
-                    if part in DISALLOWED_DIRS_WORKSPACE_WRITE:
+                    if part in disallowed:
                         _REALPATH_CACHE[cache_key] = (False, now)
                         return False
 
@@ -1229,9 +1635,10 @@ class HardPolicyEngine:
 
         filename = rel_parts[-1]
 
-        # 1. Disallowed directory components (including agent_airlock/**)
+        # 1. Disallowed directory components (including running package dir)
+        disallowed = getattr(self, '_protected_dirs', DISALLOWED_DIRS_WORKSPACE_WRITE)
         for part in rel_parts[:-1]:
-            if part in DISALLOWED_DIRS_WORKSPACE_WRITE:
+            if part in disallowed:
                 return False
 
         # 2. Exact trust root files

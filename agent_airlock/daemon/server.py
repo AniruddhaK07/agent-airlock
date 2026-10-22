@@ -93,7 +93,8 @@ class DaemonServer:
             except Exception as e:
                 logger.warning("Failed to initialize AuditLogger in DaemonServer: %s", e)
 
-            jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds)
+            allow_auth = self.config.jev.allow_authority or self.config.jev.thresholds.allow_authority
+            jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds, allow_authority=allow_auth)
             self.router = IPCRouter(
                 policy_engine=self.policy_engine,
                 jev_client=None,

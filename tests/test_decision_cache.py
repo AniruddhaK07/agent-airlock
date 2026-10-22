@@ -323,6 +323,117 @@ class TestDecisionCacheRouterIntegration(unittest.TestCase):
         cached_after = self.cache.get("run_command", norm_cmd, self.ws_root, self.ws_root, self.router.policy_hash)
         self.assertIsNone(cached_after, "Modifying trust-root file must invalidate cached decision!")
 
+    def test_decision_cache_mode_strict_only(self):
+        """Verifies that decision cache rejects non-strict modes."""
+        cache_strict = DecisionCache(mode="strict")
+        self.assertEqual(cache_strict.mode, "strict")
+        with self.assertRaises(ValueError):
+            DecisionCache(mode="lenient")
+        with self.assertRaises(ValueError):
+            DecisionCache(mode="content-hash")
+
+    def test_never_cacheable_commands_rejected(self):
+        """Verifies push, install, network, inline scripts, delete can NEVER be cached."""
+        non_cacheable = [
+            "python -c 'print(1)'",
+            "python.exe -c \"import os; os.listdir('.')\"",
+            "node -e 'console.log(1)'",
+            "git push origin main",
+            "git send-email HEAD~1",
+            "npm install lodash",
+            "pip install requests",
+            "yarn add react",
+            "curl https://example.com",
+            "wget https://example.com/file",
+            "rm -rf /tmp/data",
+            "Remove-Item -Recurse build",
+            "del /f /q output.txt",
+        ]
+        for cmd in non_cacheable:
+            key = self.cache.put(
+                tool_name="run_command",
+                normalized_target=cmd,
+                cwd=self.ws_root,
+                workspace_root=self.ws_root,
+                policy_hash="pol_x",
+                decision="allow",
+                source="ml",
+                reason="Should be rejected",
+            )
+            self.assertIsNone(key, f"Command '{cmd}' must be rejected from cache!")
+
+    def test_strict_invalidation_on_any_source_write_and_git_state(self):
+        """Verifies strict invalidation on ordinary source file writes and git state changes."""
+        cmd = "pytest tests/test_fast.py"
+        norm_cmd = self.cache.normalize_target("run_command", {"CommandLine": cmd})
+
+        self.cache.put(
+            tool_name="run_command",
+            normalized_target=norm_cmd,
+            cwd=self.ws_root,
+            workspace_root=self.ws_root,
+            policy_hash=self.router.policy_hash,
+            decision="allow",
+            source="ml",
+            reason="Fast tests",
+        )
+        self.assertIsNotNone(self.cache.get("run_command", norm_cmd, self.ws_root, self.ws_root, self.router.policy_hash))
+
+        # 1. Ordinary source write (src/app.py) must invalidate cache in STRICT mode
+        post_write_app = {
+            "version": "1.0",
+            "event": "PostToolUse",
+            "payload": {
+                "conversationId": "c1",
+                "stepIdx": 20,
+                "workspace_root": self.ws_root,
+                "toolCall": {
+                    "name": "write_to_file",
+                    "args": {"TargetFile": str(Path(self.ws_root) / "src" / "app.py"), "CodeContent": "x = 1"},
+                },
+                "status": "success",
+            },
+        }
+        self.router.dispatch(post_write_app)
+        self.assertIsNone(
+            self.cache.get("run_command", norm_cmd, self.ws_root, self.ws_root, self.router.policy_hash),
+            "ANY workspace source file write must invalidate the cache in STRICT mode!"
+        )
+
+        # Re-populate
+        self.cache.put(
+            tool_name="run_command",
+            normalized_target=norm_cmd,
+            cwd=self.ws_root,
+            workspace_root=self.ws_root,
+            policy_hash=self.router.policy_hash,
+            decision="allow",
+            source="ml",
+            reason="Fast tests",
+        )
+        self.assertIsNotNone(self.cache.get("run_command", norm_cmd, self.ws_root, self.ws_root, self.router.policy_hash))
+
+        # 2. Git state change (git checkout) must invalidate cache in STRICT mode
+        post_git = {
+            "version": "1.0",
+            "event": "PostToolUse",
+            "payload": {
+                "conversationId": "c1",
+                "stepIdx": 25,
+                "workspace_root": self.ws_root,
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": "git checkout -b feature-test"},
+                },
+                "status": "success",
+            },
+        }
+        self.router.dispatch(post_git)
+        self.assertIsNone(
+            self.cache.get("run_command", norm_cmd, self.ws_root, self.ws_root, self.router.policy_hash),
+            "Git state change must invalidate the cache in STRICT mode!"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
