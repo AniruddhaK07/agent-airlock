@@ -35,6 +35,7 @@ class DaemonConfig(BaseModel):
     log_level: str = "INFO"
 
 class JevThresholdsConfig(BaseModel):
+    allow_authority: bool = False
     allow_confidence: float = 0.90
     deny_confidence: float = 0.85
     max_safe_blast_radius: float = 2.0
@@ -49,6 +50,7 @@ class JevConfig(BaseModel):
     api_key_env: str = "TYPESAFE_API_KEY"
     base_url: str = "https://api.typesafe.ai/v1"
     timeout_seconds: float = 0.400
+    allow_authority: bool = False
     thresholds: JevThresholdsConfig = Field(default_factory=JevThresholdsConfig)
 
 class CircuitBreakerConfig(BaseModel):
@@ -64,12 +66,38 @@ class AuditConfig(BaseModel):
     flush_immediate: bool = True
     retention_days: int = 30
 
+class DecisionCacheConfig(BaseModel):
+    enabled: bool = True
+    mode: str = "strict"
+    ttl_seconds: int = 3600
+    max_entries: int = 2048
+    trust_root_files: List[str] = Field(default_factory=lambda: [
+        "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+        "Makefile", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini",
+        "conftest.py", "build.rs", "Cargo.toml", "Cargo.lock", "justfile",
+        "Taskfile.yml", "Taskfile.yaml"
+    ])
+
+class GroundingChecksConfig(BaseModel):
+    binary: bool = True
+    files: bool = True
+    scripts: bool = True
+    installs: bool = True
+
+class GroundingConfig(BaseModel):
+    enabled: bool = True
+    mode: str = "shadow"  # "shadow" | "enforce"
+    checks: GroundingChecksConfig = Field(default_factory=GroundingChecksConfig)
+    path_cache_ttl_seconds: float = 30.0
+
 class GatewayConfig(BaseModel):
     version: str = "1.0"
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     jev: JevConfig = Field(default_factory=JevConfig)
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    grounding: GroundingConfig = Field(default_factory=GroundingConfig)
+    cache: DecisionCacheConfig = Field(default_factory=DecisionCacheConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
 
     def build_effective_rules(self) -> List[PolicyRule]:

@@ -13,6 +13,7 @@ venv/
 .venv/
 env/
 ENV/
+private/
 
 # Daemon runtime artifacts and credentials
 *.sock
@@ -30,6 +31,8 @@ build/
 checkpoints/
 *.safetensors
 *.bin
+*.onnx
+*.pt
 
 # Local Antigravity lifecycle hooks configuration
 .agents/
@@ -39,3 +42,9 @@ checkpoints/
 # Benchmark scratch directories
 bench-*/
 benchmark-sandbox/
+scratch/
+
+data/traces/
+data/review_sheet_*.jsonl
+docs/v2/review-sheet-*.md
+*review-sheet*

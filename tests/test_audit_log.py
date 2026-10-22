@@ -543,5 +543,77 @@ class TestDaemonIPCIntegrationWithAuditLogger(unittest.TestCase):
         self.assertEqual(ev.final_decision, "force_ask")
         self.assertEqual(ev.reason, "workspace context unresolved")
 
+    def test_phase1_extended_fields_in_pre_tool_dispatch(self):
+        """Verifies router.dispatch populates decision_source, policy_hash, cwd, and layer_latencies_ms."""
+        payload = {
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "git status"}},
+            "conversationId": "conv-ext-01",
+            "stepIdx": 2,
+            "workspacePaths": ["/workspace/test"],
+            "cwd": "/workspace/test/src",
+        }
+        req = {
+            "version": "1.0",
+            "event": "PreToolUse",
+            "payload": payload,
+        }
+
+        res = self.router.dispatch(req)
+        self.assertEqual(res["decision"], "allow")
+
+        events = self.reader.read_all()
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertEqual(ev.decision_source, "l1")
+        self.assertEqual(ev.cwd, "/workspace/test/src")
+        self.assertIsNotNone(ev.policy_hash)
+        self.assertIn("l1", ev.layer_latencies_ms)
+        self.assertGreaterEqual(ev.layer_latencies_ms["l1"], 0.0)
+
+        # Check JSON serialization includes camelCase aliases
+        d = ev.to_dict()
+        self.assertEqual(d["decisionSource"], "l1")
+        self.assertEqual(d["policyHash"], ev.policy_hash)
+        self.assertEqual(d["layerLatenciesMs"], ev.layer_latencies_ms)
+
+    def test_query_by_decision_source_and_human_approved(self):
+        """Verifies AuditReader query filters on decision_source and human_approved."""
+        ev1 = AuditEvent(
+            event_id="evt_ext_1",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            conversation_id="conv-q1",
+            step_idx=0,
+            event_type="PreToolUse",
+            tool_name="run_command",
+            tool_args={"CommandLine": "git status"},
+            policy_verdict="allow",
+            final_decision="allow",
+            decision_source="l1",
+            human_approved=None,
+        )
+        ev2 = AuditEvent(
+            event_id="evt_ext_2",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            conversation_id="conv-q2",
+            step_idx=1,
+            event_type="PreToolUse",
+            tool_name="run_command",
+            tool_args={"CommandLine": "python train.py"},
+            policy_verdict="ambiguous",
+            final_decision="ask",
+            decision_source="l3",
+            human_approved="inferred",
+        )
+        self.audit_logger.log(ev1)
+        self.audit_logger.log(ev2)
+
+        l1_events = self.reader.query(decision_source="l1")
+        self.assertEqual(len(l1_events), 1)
+        self.assertEqual(l1_events[0].event_id, "evt_ext_1")
+
+        approved_events = self.reader.query(human_approved="inferred")
+        self.assertEqual(len(approved_events), 1)
+        self.assertEqual(approved_events[0].event_id, "evt_ext_2")
+
 if __name__ == "__main__":
     unittest.main()

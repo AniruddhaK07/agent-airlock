@@ -26,6 +26,7 @@ from agent_airlock.backends.prompts import (
 
 from agent_airlock.backends.laya import (
     LocalLayaClient,
+    FakeLayaClient,
     get_laya_agent,
     DEFAULT_CHECKPOINT,
     DEFAULT_HF_MODEL_ID,
@@ -43,6 +44,7 @@ __all__ = [
     "PINNED_MODEL",
     "JevEvaluator",
     "LocalLayaClient",
+    "FakeLayaClient",
     "get_laya_agent",
     "DEFAULT_CHECKPOINT",
     "DEFAULT_HF_MODEL_ID",

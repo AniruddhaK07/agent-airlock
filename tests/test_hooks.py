@@ -18,7 +18,7 @@ from typing import Dict, Any, Tuple, Optional
 import unittest
 from unittest.mock import patch
 
-from agent_airlock.config import GatewayConfig, DaemonConfig
+from agent_airlock.config import GatewayConfig, DaemonConfig, AuditConfig
 from agent_airlock.daemon.server import DaemonServer
 from agent_airlock.hooks.installer import generate_hooks_config, install_hooks
 from agent_airlock.hooks.stub_client import StubHookClient
@@ -109,6 +109,7 @@ class TestHookSubprocessExecutionWithDaemon(unittest.IsolatedAsyncioTestCase):
         self.socket_path = base / "test-daemon.sock"
         self.token_file = base / "test-daemon.token"
         self.pid_file = base / "test-daemon.pid"
+        self.audit_file = base / "test-audit.jsonl"
 
         self.config = GatewayConfig(
             daemon=DaemonConfig(
@@ -119,7 +120,10 @@ class TestHookSubprocessExecutionWithDaemon(unittest.IsolatedAsyncioTestCase):
                 host="127.0.0.1",
                 tcp_port=0,
                 request_timeout_seconds=2.0,
-            )
+            ),
+            audit=AuditConfig(
+                log_file=str(self.audit_file),
+            ),
         )
         self.server = DaemonServer(config=self.config)
         await self.server.start()

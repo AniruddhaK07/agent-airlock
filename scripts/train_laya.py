@@ -315,14 +315,18 @@ def main():
     print(f"Saved {cfg_path}")
 
     # 3. Copy encoder and tokenizer directories from snapshot
-    snap_dir = r"C:\Users\ASUS\.cache\huggingface\hub\models--convaiinnovations--laya\snapshots\55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
-    for subdir in ["encoder", "tokenizer"]:
-        src = os.path.join(snap_dir, subdir)
-        dst = os.path.join(save_dir, subdir)
-        if os.path.exists(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        print(f"Copied {subdir}/ directory")
+    cache_hub = Path.home() / ".cache" / "huggingface" / "hub" / "models--convaiinnovations--laya" / "snapshots"
+    snapshots = list(cache_hub.glob("*")) if cache_hub.exists() else []
+    snap_dir = str(snapshots[0]) if snapshots else ""
+    if snap_dir:
+        for subdir in ["encoder", "tokenizer"]:
+            src = os.path.join(snap_dir, subdir)
+            dst = os.path.join(save_dir, subdir)
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            if os.path.exists(src):
+                shutil.copytree(src, dst)
+                print(f"Copied {subdir}/ directory")
 
     # -------------------------------------------------------------------------
     # Verification of Saved Checkpoint & Final Evaluations

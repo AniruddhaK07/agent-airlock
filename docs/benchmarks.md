@@ -1,5 +1,9 @@
 # Three-Way Benchmark: Default Prompting vs Auto-Accept vs Airlock
 
+> [!WARNING]
+> **V1 BENCHMARK DATA CONTAMINATED — DO NOT USE AS BASELINE**
+> Rigorous leakage analysis (`scripts/check_eval_leakage.py`) proved that 9 of the 15 commands in the historical `benchmark_15` evaluation matrix appear directly in `data/train.json`. Consequently, historical v1 benchmark metrics reflect train-set memorization rather than generalization and are strictly **CONTAMINATED**. They must not be used as a baseline for Agent Airlock v2 evaluation. A clean, independent evaluation set is established under Phase 0.1.
+
 > [!NOTE]
 > **Empirical Caveat**: This benchmark reflects a single controlled run of one scripted task comparison under identical environments, demonstrating the gating and intervention behavior of each permission posture. It is intended to illustrate architectural mechanisms in practice, not serve as a statistically averaged benchmark across many trials.
 

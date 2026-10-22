@@ -11,6 +11,7 @@ Executes multi-turn scripted operational scenarios against the complete safety a
 import unittest
 import asyncio
 import tempfile
+import pytest
 from pathlib import Path
 import json
 import time
@@ -105,7 +106,7 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
         self.router = IPCRouter(
             policy_engine=HardPolicyEngine(self.config.build_effective_rules()),
             jev_client=self.mock_laya,
-            jev_evaluator=JevEvaluator(thresholds=self.config.jev.thresholds),
+            jev_evaluator=JevEvaluator(thresholds=self.config.jev.thresholds, allow_authority=True),
             circuit_breaker_config=self.config.circuit_breaker,
             audit_logger=self.audit_logger,
         )
@@ -374,6 +375,7 @@ class TestScenarioHarness(unittest.IsolatedAsyncioTestCase):
     # SCENARIO 3b: AMBIGUOUS WORKFLOW — LIVE LAYA INFERENCE (Checkpoint Drift Guard)
     # =========================================================================
 
+    @pytest.mark.ml
     async def test_scenario_ambiguous_operations_live_laya(self):
         """
         Exercises the actual fine-tuned Laya checkpoint via live in-process inference.

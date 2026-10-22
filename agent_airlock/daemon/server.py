@@ -4,7 +4,7 @@ Supports primary AF_UNIX domain sockets with automatic loopback TCP fallback,
 bearer token authentication, and robust lifecycle/shutdown management.
 """
 
-from typing import Optional, Set
+from typing import Optional, Set, List
 from pathlib import Path
 import asyncio
 import socket
@@ -13,11 +13,13 @@ import logging
 import time
 import sys
 import os
+import argparse
+import datetime
 
 from agent_airlock.config import GatewayConfig, load_config
 from agent_airlock.policy.engine import HardPolicyEngine
 from agent_airlock.daemon.router import IPCRouter
-from agent_airlock.daemon.pid import PIDManager
+from agent_airlock.daemon.pid import PIDManager, get_process_cmdline, is_process_running
 from agent_airlock.backends.jev import JevClient
 from agent_airlock.backends.evaluator import JevEvaluator
 
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 def _can_load_local_laya(provider: str, checkpoint_path: str) -> bool:
     """Checks whether local Laya model (disk checkpoint or HF Hub model ID) should be attempted."""
-    if provider in ("local", "laya"):
+    if provider in ("local", "laya", "fake", "mock"):
         return True
     if provider == "auto":
         if checkpoint_path and os.path.exists(checkpoint_path):
@@ -91,13 +93,15 @@ class DaemonServer:
             except Exception as e:
                 logger.warning("Failed to initialize AuditLogger in DaemonServer: %s", e)
 
-            jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds)
+            allow_auth = self.config.jev.allow_authority or self.config.jev.thresholds.allow_authority
+            jev_evaluator = JevEvaluator(thresholds=self.config.jev.thresholds, allow_authority=allow_auth)
             self.router = IPCRouter(
                 policy_engine=self.policy_engine,
                 jev_client=None,
                 jev_evaluator=jev_evaluator,
                 circuit_breaker_config=self.config.circuit_breaker,
                 audit_logger=audit_logger,
+                grounding_config=getattr(self.config, "grounding", None),
             )
             if self._should_load_model:
                 self.router.model_loading = True
@@ -158,6 +162,12 @@ class DaemonServer:
         checkpoint_path = getattr(self.config.jev, "checkpoint_path", "ruddh/agent-airlock-laya")
 
         should_try_local = _can_load_local_laya(provider, checkpoint_path)
+
+        if provider in ("fake", "mock"):
+            from agent_airlock.backends.laya import FakeLayaClient
+            self.router.set_jev_client(FakeLayaClient())
+            logger.info("Daemon background FakeLayaClient loaded and ready.")
+            return
 
         if should_try_local:
             try:
@@ -380,14 +390,122 @@ class DaemonServer:
         finally:
             await self.stop()
 
-def main():
-    """CLI entrypoint to run daemon server."""
+def main(argv: Optional[List[str]] = None, config: Optional[GatewayConfig] = None) -> int:
+    """CLI entrypoint to run daemon server with --status, --stop, and --foreground support."""
+    parser = argparse.ArgumentParser(
+        prog="agent-airlock-daemon",
+        description="Agent Airlock Safety Daemon controller and server.",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Check whether the background daemon is currently active and print status.",
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the actively running background daemon cleanly.",
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run the daemon server in foreground mode.",
+    )
+
+    args = parser.parse_args(argv)
+
+    cfg = config or load_config()
+    pid_manager = PIDManager(
+        pid_file=Path(cfg.daemon.pid_file).expanduser().resolve(),
+        socket_path=Path(cfg.daemon.socket_path).expanduser().resolve(),
+        token_file=Path(cfg.daemon.token_file).expanduser().resolve(),
+    )
+
+    if args.status:
+        info = pid_manager.read_info()
+        pid = info.get("pid") if info else pid_manager.read_pid()
+        if pid and pid_manager.is_running():
+            print("Agent Airlock daemon is running.")
+            print(f"PID: {pid}")
+            if info:
+                started_at = info.get("started_at")
+                if started_at:
+                    dt = datetime.datetime.fromtimestamp(started_at, tz=datetime.timezone.utc)
+                    uptime_s = round(time.time() - started_at)
+                    print(f"Started: {dt.isoformat()} (uptime: {uptime_s}s)")
+                transport = info.get("transport") or cfg.daemon.transport
+                port = info.get("port") or cfg.daemon.tcp_port
+                print(f"Transport: {transport}")
+                if transport.lower() == "tcp" or sys.platform == "win32":
+                    print(f"Address: {cfg.daemon.host}:{port}")
+                else:
+                    print(f"Socket: {cfg.daemon.socket_path}")
+            return 0
+        else:
+            print("Agent Airlock daemon is not running.")
+            return 1
+
+    elif args.stop:
+        info = pid_manager.read_info()
+        pid = info.get("pid") if info else pid_manager.read_pid()
+        if not pid:
+            print("No daemon instance is currently active.")
+            pid_manager.cleanup()
+            return 0
+
+        if not is_process_running(pid):
+            print("No daemon instance is currently active (stale PID).")
+            pid_manager.cleanup()
+            return 0
+
+        # Verify process identity: command line MUST contain agent_airlock.daemon
+        cmdline = get_process_cmdline(pid)
+        if not cmdline or "agent_airlock.daemon" not in cmdline.lower():
+            logger.warning(
+                "PID %d is active but command line does not match agent_airlock.daemon (cmdline: %r). Treating as stale/recycled PID.",
+                pid,
+                cmdline,
+            )
+            print(f"PID {pid} is not an Agent Airlock daemon (stale/recycled PID). Not terminating.")
+            pid_manager.cleanup()
+            return 0
+
+        print(f"Stopping Agent Airlock daemon (PID {pid})...")
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                PROCESS_TERMINATE = 0x0001
+                handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+                if handle:
+                    try:
+                        ctypes.windll.kernel32.TerminateProcess(handle, 0)
+                    finally:
+                        ctypes.windll.kernel32.CloseHandle(handle)
+            except Exception as e:
+                logger.warning("Error terminating process %d on Windows: %s", pid, e)
+        else:
+            try:
+                import signal
+                os.kill(pid, signal.SIGTERM)
+            except Exception as e:
+                logger.warning("Error terminating process %d on POSIX: %s", pid, e)
+
+        time.sleep(0.2)
+        pid_manager.cleanup()
+        print(f"Agent Airlock daemon stopped (PID {pid}).")
+        return 0
+
+    # Foreground or default run
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    server = DaemonServer()
+    server = DaemonServer(config=cfg, pid_manager=pid_manager)
     try:
         asyncio.run(server.run_forever())
+        return 0
     except KeyboardInterrupt:
-        pass
+        return 0
+    except RuntimeError as e:
+        print(f"Error starting daemon: {e}", file=sys.stderr)
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

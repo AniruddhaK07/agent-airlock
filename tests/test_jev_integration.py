@@ -201,13 +201,17 @@ class TestJevIntegration:
     # 4. Threshold Evaluator Logic
     # -------------------------------------------------------------------------
 
-    def test_evaluator_confident_safe_allows(self):
-        """Verify that confident safe evaluation returns ALLOW."""
-        evaluator = JevEvaluator(JevThresholdsConfig(
-            allow_confidence=0.90,
-            max_safe_blast_radius=2.0,
-            min_safe_reversible_prob=0.70,
-        ))
+    def test_evaluator_confident_safe_allows_when_enabled(self):
+        """Verify that confident safe evaluation returns ALLOW when allow_authority is enabled."""
+        evaluator = JevEvaluator(
+            JevThresholdsConfig(
+                allow_authority=True,
+                allow_confidence=0.90,
+                max_safe_blast_radius=2.0,
+                min_safe_reversible_prob=0.70,
+            ),
+            allow_authority=True,
+        )
 
         evaluation = JevEvaluation(
             score_blast_radius=1.8,
@@ -220,6 +224,55 @@ class TestJevIntegration:
         result = evaluator.decide(evaluation=evaluation)
         assert result.decision == GateDecision.ALLOW
         assert "verified safe" in result.reason
+
+    def test_evaluator_allow_authority_disabled_by_default(self):
+        """Verify that confident safe evaluation returns ASK by default when allow_authority is False."""
+        evaluator = JevEvaluator()
+        assert not evaluator.allow_authority
+
+        evaluation = JevEvaluation(
+            score_blast_radius=1.2,
+            score_confidence=0.98,
+            noul_reversible_prob=0.95,
+            choice_route="deterministic-safe",
+            choice_confidence=0.95,
+        )
+
+        result = evaluator.decide(evaluation=evaluation)
+        assert result.decision == GateDecision.ASK
+        assert "allow authority is disabled by default" in result.reason
+
+    def test_evaluator_inline_script_prohibited_even_if_allow_authority_true(self):
+        """Verify that inline scripts (python -c, node -e) are NEVER allowed by L3 even if enabled."""
+        evaluator = JevEvaluator(allow_authority=True)
+        assert evaluator.allow_authority
+
+        evaluation = JevEvaluation(
+            score_blast_radius=1.2,
+            score_confidence=0.95,
+            noul_reversible_prob=0.90,
+            choice_route="deterministic-safe",
+            choice_confidence=0.95,
+        )
+
+        # 1. Via raw_cmd
+        res1 = evaluator.decide(
+            evaluation=evaluation,
+            raw_cmd="python -c \"lines = open('file.py').readlines()\"",
+            rule_id="inline-script-execution",
+        )
+        assert res1.decision == GateDecision.ASK
+        assert "Inline interpreter scripts" in res1.reason
+
+        # 2. Via tool_args
+        res2 = evaluator.decide(
+            evaluation=evaluation,
+            tool_name="run_command",
+            tool_args={"CommandLine": "node -e 'console.log(1)'"},
+            rule_id="inline-script-execution",
+        )
+        assert res2.decision == GateDecision.ASK
+        assert "Inline interpreter scripts" in res2.reason
 
     def test_evaluator_low_confidence_fails_closed_to_ask(self):
         """Verify that choice confidence below threshold fails closed to ASK."""
@@ -359,7 +412,7 @@ class TestJevIntegration:
             }
 
         client = JevClient(transport=safe_jev_transport)
-        evaluator = JevEvaluator()
+        evaluator = JevEvaluator(allow_authority=True)
         router = IPCRouter(
             policy_engine=HardPolicyEngine(),
             jev_client=client,
@@ -381,6 +434,76 @@ class TestJevIntegration:
         assert "verified safe" in res["reason"]
         assert res["jevEvaluation"] is not None
         assert res["jevEvaluation"]["score_blast_radius"] == 1.5
+
+    def test_router_allow_authority_off_by_default(self):
+        """Ambiguous command passing Jev thresholds returns ASK when allow_authority is default False."""
+        def safe_jev_transport(payload: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "model": "jev-1.13.0",
+                "score_blast_radius": 1.2,
+                "score_confidence": 0.98,
+                "noul_reversible_prob": 0.95,
+                "choice_route": "deterministic-safe",
+                "choice_confidence": 0.98,
+            }
+
+        client = JevClient(transport=safe_jev_transport)
+        evaluator = JevEvaluator()  # Default allow_authority=False
+        router = IPCRouter(
+            policy_engine=HardPolicyEngine(),
+            jev_client=client,
+            jev_evaluator=evaluator,
+        )
+
+        req = {
+            "version": "1.0",
+            "event": "PreToolUse",
+            "payload": {
+                "toolCall": {"name": "run_command", "args": {"CommandLine": "python generate_docs.py"}},
+                "workspace_root": "/project",
+            },
+        }
+
+        res = router.dispatch(req)
+        assert res["status"] == "success"
+        assert res["decision"] == "ask"
+        assert "allow authority is disabled by default" in res["reason"]
+
+    def test_router_inline_python_c_fails_closed_to_ask_even_if_allow_authority_true(self):
+        """python -c can NEVER be allowed by L3 even if allow_authority=True."""
+        def safe_jev_transport(payload: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "model": "jev-1.13.0",
+                "score_blast_radius": 1.1,
+                "score_confidence": 0.99,
+                "noul_reversible_prob": 0.99,
+                "choice_route": "deterministic-safe",
+                "choice_confidence": 0.99,
+            }
+
+        client = JevClient(transport=safe_jev_transport)
+        evaluator = JevEvaluator(allow_authority=True)
+        router = IPCRouter(
+            policy_engine=HardPolicyEngine(),
+            jev_client=client,
+            jev_evaluator=evaluator,
+        )
+
+        req = {
+            "version": "1.0",
+            "event": "PreToolUse",
+            "payload": {
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": "python -c \"import os; print(len(os.listdir('.')))\""},
+                },
+                "workspace_root": "/project",
+            },
+        }
+
+        res = router.dispatch(req)
+        assert res["decision"] == "ask"
+        assert "Inline interpreter scripts" in res["reason"]
 
     def test_router_ambiguous_evaluation_deny_flow(self):
         """Ambiguous command assessed by Jev as catastrophic is returned as DENY."""

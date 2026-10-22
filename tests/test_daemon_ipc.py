@@ -13,7 +13,7 @@ import sys
 import os
 from pathlib import Path
 
-from agent_airlock.config import GatewayConfig, DaemonConfig
+from agent_airlock.config import GatewayConfig, DaemonConfig, AuditConfig, JevConfig, JevThresholdsConfig
 from agent_airlock.daemon.server import DaemonServer
 from agent_airlock.daemon.pid import PIDManager
 from agent_airlock.hooks.stub_client import StubHookClient
@@ -26,6 +26,7 @@ class TestDaemonIPC(unittest.IsolatedAsyncioTestCase):
         self.socket_path = self.tmp_path / "test-daemon.sock"
         self.token_file = self.tmp_path / ".test-daemon.token"
         self.pid_file = self.tmp_path / "test-daemon.pid"
+        self.audit_file = self.tmp_path / "test-audit.jsonl"
 
         # Configure daemon to use TCP on ephemeral port 0 (cross-platform safe)
         self.config = GatewayConfig(
@@ -37,7 +38,10 @@ class TestDaemonIPC(unittest.IsolatedAsyncioTestCase):
                 host="127.0.0.1",
                 tcp_port=0,
                 request_timeout_seconds=2.0,
-            )
+            ),
+            audit=AuditConfig(
+                log_file=str(self.audit_file),
+            ),
         )
         self.server = DaemonServer(config=self.config)
         await self.server.start()
@@ -390,7 +394,7 @@ class TestDaemonIPC(unittest.IsolatedAsyncioTestCase):
 import sys, time, asyncio
 from pathlib import Path
 sys.path.insert(0, r"{repo_root}")
-from agent_airlock.config import GatewayConfig, DaemonConfig
+from agent_airlock.config import GatewayConfig, DaemonConfig, AuditConfig
 from agent_airlock.daemon.server import DaemonServer
 
 counter = Path(r"{counter_file}")
@@ -404,7 +408,10 @@ cfg = GatewayConfig(
         tcp_port={target_port},
         transport="tcp",
         host="127.0.0.1",
-    )
+    ),
+    audit=AuditConfig(
+        log_file=str(Path(r"{daemon_pid}").parent / "test-audit.jsonl"),
+    ),
 )
 server = DaemonServer(config=cfg)
 asyncio.run(server.run_forever())
@@ -413,6 +420,7 @@ asyncio.run(server.run_forever())
 
         def worker():
             c = StubHookClient(
+                config=self.config,
                 host="127.0.0.1",
                 port=target_port,
                 token_file=str(daemon_token),
@@ -494,7 +502,10 @@ asyncio.run(server.run_forever())
                     token_file=str(tok_p),
                     pid_file=str(pid_p),
                     transport="unix",
-                )
+                ),
+                audit=AuditConfig(
+                    log_file=str(Path(tmp_dir.name) / "test-audit.jsonl"),
+                ),
             )
             server = DaemonServer(config=cfg)
             await server.start()
@@ -542,6 +553,13 @@ asyncio.run(server.run_forever())
                 tcp_port=0,
                 transport="tcp",
                 host="127.0.0.1",
+            ),
+            audit=AuditConfig(
+                log_file=str(tmp_path / "test-audit.jsonl"),
+            ),
+            jev=JevConfig(
+                allow_authority=True,
+                thresholds=JevThresholdsConfig(allow_authority=True),
             ),
         )
 
@@ -692,6 +710,28 @@ asyncio.run(server.run_forever())
         event = logged_events[0]
         self.assertEqual(event.final_decision, "allow")
         self.assertGreater(event.latency_ms, 0.0)
+
+    async def test_oversized_command_fails_closed_to_ask(self):
+        """
+        Verify that oversized commands (>4096 chars) bypass ML and fail-closed to ASK.
+        """
+        oversized_benign = "git status " + "src/ " * 1000
+        res = await asyncio.to_thread(
+            self.client.check_tool, "run_command", {"CommandLine": oversized_benign}
+        )
+        self.assertEqual(res.get("decision"), "ask")
+        self.assertEqual(res.get("ruleId"), "oversized-command-ask")
+
+    async def test_oversized_command_with_buried_payload_denied(self):
+        """
+        Verify that oversized commands with buried deny payloads are DENIED at daemon layer.
+        """
+        buried_evil = "echo '" + "A" * 3000 + "'; rm -rf /; echo '" + "B" * 2000 + "'"
+        res = await asyncio.to_thread(
+            self.client.check_tool, "run_command", {"CommandLine": buried_evil}
+        )
+        self.assertEqual(res.get("decision"), "deny")
+
 
 if __name__ == "__main__":
     unittest.main()

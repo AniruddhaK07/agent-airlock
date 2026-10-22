@@ -130,12 +130,51 @@ class LocalLayaClient:
         # Construct input state
         if tool_name == "run_command":
             cmd = tool_args.get("CommandLine", "")
+            if len(cmd) > 4096:
+                return JevEvaluation(
+                    score_blast_radius=3.0,
+                    score_confidence=1.0,
+                    noul_reversible_prob=0.0,
+                    choice_route=ChoiceRoute.NEEDS_HUMAN.value,
+                    choice_confidence=1.0,
+                    raw_payload={"reason": "Oversized command (>4096 chars); truncated classification disallowed."},
+                )
             state = {"tool": "run_command", "command": cmd}
         elif tool_name in ("view_file", "write_to_file", "replace_file_content"):
             target = tool_args.get("AbsolutePath") or tool_args.get("TargetFile") or ""
             state = {"tool": tool_name, "path": target}
         else:
             state = {"tool": tool_name, **tool_args}
+
+        # Token length limit guard (Amendment 1 A.4):
+        # ModernBERT has max_len=512; question prefixes consume up to 61 tokens.
+        # Any state exceeding MAX_STATE_TOKENS (451 tokens) is truncated by build_sequence,
+        # which would evaluate only the truncated head. Fail-closed to ASK.
+        MAX_STATE_TOKENS = 451
+        if hasattr(self.agent, "tok") and self.agent.tok is not None:
+            try:
+                from laya.common import serialize_state
+                ser_state = serialize_state(state).replace(self.agent.tok.mask_token, " ")
+                token_count = len(self.agent.tok(ser_state, add_special_tokens=False)["input_ids"])
+                if token_count > MAX_STATE_TOKENS:
+                    logger.warning(
+                        "Command state token length (%d) exceeds max untruncated budget (%d); failing closed to ASK.",
+                        token_count, MAX_STATE_TOKENS
+                    )
+                    return JevEvaluation(
+                        score_blast_radius=3.0,
+                        score_confidence=1.0,
+                        noul_reversible_prob=0.0,
+                        choice_route=ChoiceRoute.NEEDS_HUMAN.value,
+                        choice_confidence=1.0,
+                        raw_payload={
+                            "reason": f"Command state token length ({token_count}) exceeds model untruncated budget ({MAX_STATE_TOKENS}); truncated classification disallowed.",
+                            "token_count": token_count,
+                            "max_state_tokens": MAX_STATE_TOKENS,
+                        },
+                    )
+            except Exception as e:
+                logger.debug("Token length check failed (%s); proceeding to predict", e)
 
         try:
             t0 = time.time()
@@ -170,3 +209,67 @@ class LocalLayaClient:
         except Exception as e:
             logger.error("Local Laya prediction failed: %s", e)
             raise JevClientError(f"Local Laya inference failed: {e}") from e
+
+
+class FakeLayaClient:
+    """
+    Lightweight in-memory fake Laya client for testing without loading model weights.
+    Avoids multi-second background thread initialization and blocks during teardown.
+    """
+
+    def __init__(
+        self,
+        checkpoint_path: Optional[str] = None,
+        device: Optional[str] = None,
+        route: str = ChoiceRoute.NEEDS_HUMAN.value,
+        blast: float = 3.5,
+        rev: float = 0.1,
+        conf: float = 0.88,
+        noul_prob: float = 0.85,
+        noul_conf: float = 0.90,
+        **kwargs,
+    ):
+        self.checkpoint_path = checkpoint_path
+        self.device = device
+        self.route = route
+        self.blast = blast
+        self.rev = rev
+        self.conf = conf
+        self.noul_prob = noul_prob
+        self.noul_conf = noul_conf
+        self.agent = None
+
+    def evaluate_ambiguous_tool(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> JevEvaluation:
+        return JevEvaluation(
+            score_blast_radius=self.blast,
+            score_confidence=self.conf,
+            noul_reversible_prob=self.rev,
+            choice_route=self.route,
+            choice_confidence=self.conf,
+            raw_payload={"mock": True},
+        )
+
+    def evaluate_tool_call(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        workspace_context: str = "",
+    ) -> JevEvaluation:
+        return self.evaluate_ambiguous_tool(tool_name, tool_args, {"workspace_root": workspace_context})
+
+    def evaluate_repetition(
+        self,
+        previous_commands: Any,
+        current_command: str,
+    ) -> Dict[str, float]:
+        return {
+            "is_repeat_prob": self.noul_prob,
+            "confidence": self.noul_conf,
+            "latency_ms": 0.5,
+        }
+

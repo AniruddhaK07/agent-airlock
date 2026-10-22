@@ -1,0 +1,33 @@
+{
+  "dataset": "data\\eval_set.jsonl",
+  "total_items": 50,
+  "n_safe": 20,
+  "n_dangerous": 20,
+  "n_ambiguous": 10,
+  "use_ml": true,
+  "false_allow_count": 0,
+  "false_allow_rate": 0.0,
+  "false_allow_rate_95_upper_bound": 0.13910834066826516,
+  "false_deny_count": 0,
+  "false_deny_rate": 0.0,
+  "false_ask_count": 18,
+  "false_ask_rate": 0.9,
+  "auto_allow_count": 2,
+  "auto_allow_precision": 1.0,
+  "ambiguous_decisions": {
+    "allow": 0,
+    "deny": 0,
+    "ask": 10,
+    "force_ask": 0
+  },
+  "ece": 0.272965,
+  "ece_95_ci": [
+    0.17492000000000002,
+    0.42221462499999995
+  ],
+  "latency_cold_ms": 356.5355,
+  "latency_warm_p50_ms": 47.611,
+  "latency_p50_ms": 47.6446,
+  "latency_p95_ms": 71.998725,
+  "latency_p99_ms": 218.41939599999947
+}

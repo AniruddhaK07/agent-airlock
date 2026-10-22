@@ -1,15 +1,36 @@
 # Agent Airlock 🛡️
 
+## Status: archived (October 2026)
+
+A measured rework of this project (branch history merged) added deterministic policy
+rules, a strict decision cache, a replay/evaluation harness, and a fix for a v1 bug
+where the ML classifier could auto-allow inline scripts (ML allow authority is now
+off by default).
+
+What we measured (41 traces, 7,051 steps; in-sample, not validated on held-out data):
+- Rules cut human prompts per 100 commands from 27.9 to 16.7, but most of that
+  depends on an unverified assumption about how the host handles write prompts;
+  without it the reduction is about 10%.
+- The ML classifier did no better than chance on ambiguous commands (AUC 0.56).
+- The decision cache avoided 8 of 7,051 prompts; host allow-rules already
+  covered most repeats.
+- No evidence of hallucination reduction.
+
+The project is archived: the gains are small relative to host-level allow rules.
+The harness and findings are kept as a reference for how this was measured.
+
+---
+
 **Layered Safety Airlock & Deterministic Policy Gateway for Autonomous AI Coding Assistants**
 
-[![Tests](https://img.shields.io/badge/tests-126%20passed%20%7C%20100%25-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-230%20passed%20%7C%20100%25-brightgreen)](#testing)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#hardware-requirements--performance)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 
 Autonomous AI coding assistants (such as Google Antigravity) are powerful because they can inspect code, run terminal commands, and edit files independently. However, giving an autonomous agent direct shell access introduces serious operational risks: accidental root wipes, runaway failure fix-loops, credential exfiltration, and destructive git commands.
 
-**Agent Airlock** is a local, high-performance security airlock that intercepts tool execution calls before they reach your system. It combines deterministic pattern matching with a calibrated, fine-tuned transformer classifier to provide **zero-friction speed for safe commands** and **uncompromising protection against dangerous or ambiguous operations**.
+**Agent Airlock** is a local, high-performance security airlock that intercepts tool execution calls before they reach your system. It combines deterministic pattern matching with a decision cache to provide **low-latency resolution for safe commands** and **fail-closed protection against dangerous or ambiguous operations**. (Note: the experimental ML classifier performed no better than chance on ambiguous commands, AUC 0.56, and its allow authority is disabled by default; see [`docs/v2/metrics.md`](docs/v2/metrics.md)).
 
 
 https://github.com/user-attachments/assets/caef7dc0-5f42-41be-b807-74d743fc6eba
@@ -42,11 +63,11 @@ Agent Airlock intercepts agent tool calls via the standard `PreToolUse` and `Pos
                            │ (Normal workflow)
                            ▼
   ┌───────────────────────────────────────────────────┐
-  │  Layer 3: Calibrated ML Safety Airlock            │ ➔  ~38 ms (GPU) / ~1.2s (CPU)
+  │  Layer 3: Experimental ML Airlock (Laya)          │ ➔  ~38 ms (GPU) / ~1.2s (CPU)
   │  - Fine-tuned ModernBERT via Laya                 │
-  │  - Predicts: Blast Radius, Reversibility, Route   │
-  │  - Confident Safe (conf >= 0.90, blast <= 2.0) ───┼─➔ ALLOW
-  │  - High Blast Radius (blast >= 4.0, conf >= 0.85) ┼─➔ DENY
+  │  - Evaluated on ambiguous commands: AUC 0.56      │
+  │  - ML Allow Authority: OFF by default (v1.1) ─────┼─➔ ASK (Human confirmation)
+  │  - Inline scripts strictly prohibited from allow  │
   └────────────────────────┬──────────────────────────┘
                            │ (Uncertain or below threshold)
                            ▼
@@ -63,7 +84,7 @@ Agent Airlock intercepts agent tool calls via the standard `PreToolUse` and `Pos
 
 - **Blazing Fast Hot-Path**: Safe developer commands (`git status`, `ls -la`, read-only queries) resolve via Layer 1 in **< 1 ms** with zero human confirmation prompts.
 - **Evasion-Hardened**: Handles quote insertion (`r"m" -rf /`), line continuations, command chaining (`git status; rm -rf /`), backtick/subshell substitution, and Windows/POSIX syntax divergence.
-- **Runaway Loop Breaker**: Detects when an agent gets trapped in a repetitive error-retry cycle and automatically trips into `force_ask` to stop token and compute burn.
+- **Runaway Loop Breaker**: Inspects repetitive failure signatures. (Phase 2a evaluation showed exact SHA-256 hash missed cosmetic retry variations with 0 trips in production traces; no evidence of hallucination reduction).
 - **Two-Stage Daemon Startup**: Background daemon binds socket and activates deterministic rules in **~360 ms**; asynchronous model loading occurs in the background without blocking terminal workflows.
 - **Tamper-Evident Audit Trail**: Every decision, latency measurement, rule match, and ML score is written append-only to an ISO 8601 `audit.jsonl` log.
 
@@ -95,6 +116,9 @@ The local ML safety airlock is powered by a fine-tuned **ModernBERT** architectu
 1. **Blast Radius** (Score 0 to 4): Potential blast radius of an operational failure.
 2. **Reversibility** (Noul probability [0.0, 1.0]): Whether the command's effects can be cleanly undone.
 3. **Route** (3-way choice): `deterministic-safe`, `needs-human`, or `needs-reasoning-model`.
+
+> [!NOTE]
+> **Empirical Evaluation Finding**: In Phase 1.6 empirical evaluation against 195 human-labeled ambiguous commands, the fine-tuned ModernBERT model achieved an AUC of 0.5585 (indistinguishable from chance; 95% CI [0.458, 0.659]). Consequently, L3 ML allow authority is disabled by default (`allow_authority: false`), and ambiguous commands route to human confirmation.
 
 ### Out-of-the-Box Distribution
 - **Pre-Trained Weights**: Pre-trained weights are hosted on Hugging Face Hub under [`ruddh/agent-airlock-laya`](https://huggingface.co/ruddh/agent-airlock-laya) and will download automatically if no local checkpoint is found.
@@ -224,7 +248,11 @@ Example audit record:
 
 ## 📊 Empirical Benchmarks
 
-See [`docs/benchmarks.md`](docs/benchmarks.md) for a controlled three-way empirical comparison evaluating Agent Airlock against standard prompting and auto-accept modes across prompt frequency, decision latencies, and circuit breaker loop interventions.
+- **v2 Replay & Evaluation Harness**: See [`docs/v2/metrics.md`](docs/v2/metrics.md) for full empirical measurements across 41 production traces (7,051 steps, in-sample). Key findings:
+  - Deterministic rules cut human prompts from 27.9 to 16.7 per 100 commands with an unverified write-prompt assumption (~10% reduction without it).
+  - Decision cache avoided 8 of 7,051 prompts (host allow-rules already covered most repeat commands).
+  - ML classifier achieved AUC 0.56 on ambiguous commands (no better than chance).
+- **Historical v1 Synthetic Benchmarks**: Preserved in [`docs/benchmarks.md`](docs/benchmarks.md) for architectural reference.
 
 ---
 
@@ -233,7 +261,7 @@ See [`docs/benchmarks.md`](docs/benchmarks.md) for a controlled three-way empiri
 The repository includes a comprehensive test harness covering every layer of the airlock:
 
 ```bash
-# Run full test suite (126 passed tests)
+# Run full test suite (230 passed tests)
 pytest -v
 ```
 

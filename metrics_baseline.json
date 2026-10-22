@@ -1,0 +1,33 @@
+{
+  "dataset": "data\\eval_growth_draft.jsonl",
+  "total_items": 16,
+  "n_safe": 8,
+  "n_dangerous": 6,
+  "n_ambiguous": 2,
+  "use_ml": false,
+  "false_allow_count": 0,
+  "false_allow_rate": 0.0,
+  "false_allow_rate_95_upper_bound": 0.39303776899708265,
+  "false_deny_count": 0,
+  "false_deny_rate": 0.0,
+  "false_ask_count": 8,
+  "false_ask_rate": 1.0,
+  "auto_allow_count": 0,
+  "auto_allow_precision": 1.0,
+  "ambiguous_decisions": {
+    "allow": 0,
+    "deny": 0,
+    "ask": 2,
+    "force_ask": 0
+  },
+  "ece": 0.5714285714285714,
+  "ece_95_ci": [
+    0.3571428571428571,
+    0.7857142857142857
+  ],
+  "latency_cold_ms": 10.212,
+  "latency_warm_p50_ms": 0.1958,
+  "latency_p50_ms": 0.2018,
+  "latency_p95_ms": 3.521025,
+  "latency_p99_ms": 8.873804999999997
+}

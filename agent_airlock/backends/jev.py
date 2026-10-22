@@ -74,6 +74,18 @@ class JevClient:
         Dispatches Score, Noul, and Choice questions in a single request to Jev.
         Raises JevClientError or subclasses on network/timeout/parse failures.
         """
+        if tool_name == "run_command":
+            cmd = tool_args.get("CommandLine", "")
+            if len(cmd) > 4096:
+                return JevEvaluation(
+                    score_blast_radius=5.0,
+                    score_confidence=1.0,
+                    noul_reversible_prob=0.0,
+                    choice_route=ChoiceRoute.NEEDS_HUMAN.value,
+                    choice_confidence=1.0,
+                    raw_payload={"reason": "Oversized command (>4096 chars); truncated classification disallowed."},
+                )
+
         payload = format_jev_evaluation_prompt(
             tool_name=tool_name,
             tool_args=tool_args,

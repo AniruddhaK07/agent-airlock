@@ -9,13 +9,18 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
+import hashlib
 import json
+import re
 import time
 import uuid
 import logging
 
 from agent_airlock.policy.engine import HardPolicyEngine
 from agent_airlock.policy.models import PolicyVerdict, PolicyResult
+from agent_airlock.cache.decision_cache import DecisionCache
+from agent_airlock.config import GroundingConfig
+from agent_airlock.grounding import GroundingEngine, GroundingResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,9 @@ class IPCRouter:
         jev_evaluator: Optional[Any] = None,
         circuit_breaker_config: Optional[Any] = None,
         audit_logger: Optional[Any] = None,
+        decision_cache: Optional[DecisionCache] = None,
+        grounding_config: Optional[GroundingConfig] = None,
+        grounding_engine: Optional[GroundingEngine] = None,
     ):
         self.policy_engine = policy_engine or HardPolicyEngine()
         self.auth_token = auth_token
@@ -52,10 +60,19 @@ class IPCRouter:
         self.jev_evaluator = jev_evaluator
         self.circuit_breaker_config = circuit_breaker_config
         self.audit_logger = audit_logger
+        self.decision_cache = decision_cache if decision_cache is not None else DecisionCache()
+        self.grounding_config = grounding_config or GroundingConfig()
+        self.grounding_engine = grounding_engine if grounding_engine is not None else GroundingEngine(config=self.grounding_config)
+        self.policy_hash = self._compute_policy_hash()
         self.start_time = time.time()
         self.workspaces: Dict[str, WorkspaceState] = {}
         self.model_ready: bool = jev_client is not None
         self.model_loading: bool = False
+
+    def _compute_policy_hash(self) -> str:
+        rule_ids = sorted(r.id for r in self.policy_engine.rules)
+        raw = "|".join(rule_ids)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def set_jev_client(self, client: Any) -> None:
         """
@@ -78,7 +95,7 @@ class IPCRouter:
             raise ValueError("workspace_root is required and cannot be empty.")
 
         try:
-            norm_key = str(Path(workspace_root).resolve())
+            norm_key = os.path.normcase(os.path.abspath(workspace_root))
         except Exception:
             norm_key = str(workspace_root).strip()
 
@@ -231,8 +248,37 @@ class IPCRouter:
         tool_args = tool_call.get("args", {})
         audit_id = self._generate_audit_id()
 
+        caller_cwd = str(tool_args.get("Cwd") or tool_args.get("cwd") or payload.get("cwd") or ws_state.workspace_root)
+        caller_env = payload.get("env")
+
+        # 0. L0 Grounding Evaluation (Section 9.4)
+        t_l0_start = time.perf_counter()
+        grounding_res = None
+        l0_lat = 0.0
+        if self.grounding_engine and self.grounding_config.enabled:
+            grounding_res = self.grounding_engine.evaluate(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                cwd=caller_cwd,
+                workspace_root=ws_state.workspace_root,
+                env=caller_env,
+            )
+            l0_lat = (time.perf_counter() - t_l0_start) * 1000.0
+
         # Deterministic evaluation via HardPolicyEngine
-        policy_result: PolicyResult = self.policy_engine.evaluate(tool_name, tool_args)
+        policy_result: PolicyResult = self.policy_engine.evaluate(
+            tool_name, tool_args, workspace_root=ws_state.workspace_root
+        )
+        t_l1 = time.perf_counter()
+        l1_lat = max(0.0, (t_l1 - t_start - (l0_lat / 1000.0)) * 1000.0)
+
+        shadow_metadata = {}
+        if grounding_res and grounding_res.is_failed and self.grounding_config.mode == "shadow":
+            shadow_metadata["shadow_grounding"] = {
+                "check_id": grounding_res.check_id,
+                "hint": grounding_res.hint,
+                "target": grounding_res.target,
+            }
 
         if policy_result.verdict == PolicyVerdict.DENY:
             latency_ms = (time.perf_counter() - t_start) * 1000.0
@@ -247,9 +293,37 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
-            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            self._log_pre_tool_event(
+                payload, ws_state, policy_result, res,
+                latency_ms=latency_ms,
+                decision_source="l1",
+                layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3)},
+                metadata=shadow_metadata,
+            )
             return res
         elif policy_result.verdict == PolicyVerdict.ALLOW:
+            # Enforce mode: Check C2 files grounding
+            if grounding_res and grounding_res.is_failed and self.grounding_config.mode == "enforce" and tool_name in ("view_file", "replace_file_content"):
+                latency_ms = (time.perf_counter() - t_start) * 1000.0
+                res = {
+                    "version": version,
+                    "status": "success",
+                    "decision": "deny",
+                    "reason": f"Grounding check failed ({grounding_res.check_id}): {grounding_res.hint}",
+                    "ruleId": f"grounding-{grounding_res.check_id.lower()}",
+                    "permissionOverrides": [],
+                    "overwrite": None,
+                    "auditId": audit_id,
+                    "workspaceRoot": ws_state.workspace_root,
+                }
+                self._log_pre_tool_event(
+                    payload, ws_state, policy_result, res,
+                    latency_ms=latency_ms,
+                    decision_source="l0",
+                    layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3)},
+                )
+                return res
+
             latency_ms = (time.perf_counter() - t_start) * 1000.0
             res = {
                 "version": version,
@@ -262,7 +336,13 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
-            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            self._log_pre_tool_event(
+                payload, ws_state, policy_result, res,
+                latency_ms=latency_ms,
+                decision_source="l1",
+                layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3)},
+                metadata=shadow_metadata,
+            )
             return res
         elif policy_result.rule_id == "unparseable-command-syntax":
             latency_ms = (time.perf_counter() - t_start) * 1000.0
@@ -277,11 +357,41 @@ class IPCRouter:
                 "auditId": audit_id,
                 "workspaceRoot": ws_state.workspace_root,
             }
-            self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+            self._log_pre_tool_event(
+                payload, ws_state, policy_result, res,
+                latency_ms=latency_ms,
+                decision_source="fallback",
+                layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3)},
+                metadata=shadow_metadata,
+            )
             return res
         else:
             # PolicyVerdict.AMBIGUOUS:
+            # Enforce mode: Check L0 Grounding enforcement on would-ASK commands
+            if grounding_res and grounding_res.is_failed and self.grounding_config.mode == "enforce":
+                latency_ms = (time.perf_counter() - t_start) * 1000.0
+                res = {
+                    "version": version,
+                    "status": "success",
+                    "decision": "deny",
+                    "reason": f"Grounding check failed ({grounding_res.check_id}): {grounding_res.hint}",
+                    "ruleId": f"grounding-{grounding_res.check_id.lower()}",
+                    "permissionOverrides": [],
+                    "overwrite": None,
+                    "auditId": audit_id,
+                    "workspaceRoot": ws_state.workspace_root,
+                }
+                self._log_pre_tool_event(
+                    payload, ws_state, policy_result, res,
+                    latency_ms=latency_ms,
+                    decision_source="l0",
+                    layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3)},
+                )
+                return res
+
             # 1. Circuit Breaker: check for repeating failure loops before probabilistic gating
+            t_cb_start = time.perf_counter()
+            cb_res = None
             if ws_state.circuit_breaker:
                 cb_res = ws_state.circuit_breaker.check_pre_tool(
                     tool_name=tool_name,
@@ -289,6 +399,7 @@ class IPCRouter:
                     step_idx=payload.get("stepIdx", 0),
                 )
                 if cb_res.is_tripped:
+                    cb_lat = (time.perf_counter() - t_cb_start) * 1000.0
                     latency_ms = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
@@ -307,10 +418,79 @@ class IPCRouter:
                         payload, ws_state, policy_result, res,
                         circuit_breaker_tripped=True,
                         latency_ms=latency_ms,
+                        decision_source="l2",
+                        layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3), "l2": round(cb_lat, 3)},
+                        metadata=shadow_metadata,
                     )
                     return res
 
-            # 2. Route through Jev Integration Layer if configured and ready
+            # 2. Oversized commands (>4096 chars) must never be ALLOW at any layer (L1, cache, ML).
+            # The ML layer must not classify truncated input: oversized means ASK.
+            raw_cmd = tool_args.get("CommandLine", "") if tool_name == "run_command" else ""
+            if tool_name == "run_command" and len(raw_cmd) > 4096:
+                latency_ms = (time.perf_counter() - t_start) * 1000.0
+                cb_lat = (time.perf_counter() - t_cb_start) * 1000.0 if ws_state.circuit_breaker else 0.0
+                res = {
+                    "version": version,
+                    "status": "fail_closed",
+                    "decision": "ask",
+                    "reason": "Command length exceeds 4096 characters; ML classification bypassed to prevent truncated evaluation, failing closed to ASK.",
+                    "ruleId": "oversized-command-ask",
+                    "permissionOverrides": [],
+                    "overwrite": None,
+                    "auditId": audit_id,
+                    "workspaceRoot": ws_state.workspace_root,
+                }
+                self._log_pre_tool_event(
+                    payload, ws_state, policy_result, res,
+                    circuit_breaker_tripped=False,
+                    latency_ms=latency_ms,
+                    decision_source="fallback",
+                    layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3), "l2": round(cb_lat, 3)},
+                    metadata=shadow_metadata,
+                )
+                return res
+
+            # 3. Exact-Key Decision Cache (Phase 1.4 / Section 9.3)
+            # Positioned strictly after L2 Circuit Breaker (R1)
+            t_cache_start = time.perf_counter()
+            cb_lat = (time.perf_counter() - t_cb_start) * 1000.0 if ws_state.circuit_breaker else 0.0
+            if self.decision_cache and self.decision_cache.enabled:
+                norm_target = self.decision_cache.normalize_target(tool_name, tool_args)
+                cwd_val = str(tool_args.get("cwd") or payload.get("cwd") or ws_state.workspace_root)
+                cached_entry = self.decision_cache.get(
+                    tool_name=tool_name,
+                    normalized_target=norm_target,
+                    cwd=cwd_val,
+                    workspace_root=ws_state.workspace_root,
+                    policy_hash=self.policy_hash,
+                )
+                if cached_entry:
+                    cache_lat = (time.perf_counter() - t_cache_start) * 1000.0
+                    total_latency = (time.perf_counter() - t_start) * 1000.0
+                    res = {
+                        "version": version,
+                        "status": "success",
+                        "decision": cached_entry.decision,
+                        "reason": cached_entry.reason,
+                        "ruleId": cached_entry.rule_id,
+                        "permissionOverrides": [],
+                        "overwrite": None,
+                        "auditId": audit_id,
+                        "workspaceRoot": ws_state.workspace_root,
+                        "cacheKeyHash": cached_entry.key,
+                    }
+                    self._log_pre_tool_event(
+                        payload, ws_state, policy_result, res,
+                        circuit_breaker_tripped=False,
+                        latency_ms=total_latency,
+                        decision_source="cache",
+                        layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3), "l2": round(cb_lat, 3), "cache": round(cache_lat, 3)},
+                        metadata=shadow_metadata,
+                    )
+                    return res
+
+            # 4. Route through Jev Integration Layer if configured and ready
             if self.jev_client and self.jev_evaluator and self.model_ready:
                 t0 = time.perf_counter()
                 try:
@@ -328,12 +508,28 @@ class IPCRouter:
                     jev_decision = self.jev_evaluator.decide(
                         evaluation=evaluation,
                         latency_ms=latency,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        rule_id=policy_result.rule_id,
+                        raw_cmd=raw_cmd,
                     )
                     dec_val = (
                         jev_decision.decision.value
                         if hasattr(jev_decision.decision, "value")
                         else str(jev_decision.decision)
                     )
+                    # Defense-in-depth: inline interpreter scripts or dangerous constructs may NEVER be allowed by L3
+                    if dec_val == "allow":
+                        from agent_airlock.policy.engine import HardPolicyEngine
+                        if (
+                            policy_result.rule_id in ("inline-script-execution", "dangerous-construct-requires-confirmation")
+                            or (raw_cmd and HardPolicyEngine._is_inline_script(raw_cmd))
+                        ):
+                            dec_val = "ask"
+                            jev_decision.reason = (
+                                "Inline interpreter scripts (-c/-e) and dangerous constructs are strictly human confirmation only; "
+                                "L3 auto-allow prohibited."
+                            )
                     total_latency = (time.perf_counter() - t_start) * 1000.0
                     res = {
                         "version": version,
@@ -347,11 +543,31 @@ class IPCRouter:
                         "workspaceRoot": ws_state.workspace_root,
                         "jevEvaluation": evaluation.to_dict() if hasattr(evaluation, "to_dict") else None,
                     }
+                    if self.decision_cache and self.decision_cache.enabled and dec_val in ("allow", "deny"):
+                        raw_len = len(raw_cmd) if tool_name == "run_command" else 0
+                        norm_target = self.decision_cache.normalize_target(tool_name, tool_args)
+                        cwd_val = str(tool_args.get("cwd") or payload.get("cwd") or ws_state.workspace_root)
+                        cache_key = self.decision_cache.put(
+                            tool_name=tool_name,
+                            normalized_target=norm_target,
+                            cwd=cwd_val,
+                            workspace_root=ws_state.workspace_root,
+                            policy_hash=self.policy_hash,
+                            decision=dec_val,
+                            source="ml",
+                            reason=jev_decision.reason,
+                            raw_length=raw_len,
+                        )
+                        if cache_key:
+                            res["cacheKeyHash"] = cache_key
                     self._log_pre_tool_event(
                         payload, ws_state, policy_result, res,
                         circuit_breaker_tripped=False,
                         jev_evaluation=res["jevEvaluation"],
                         latency_ms=total_latency,
+                        decision_source="l3",
+                        layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3), "l2": round(cb_lat, 3), "l3": round(latency, 3)},
+                        metadata=shadow_metadata,
                     )
                     return res
                 except Exception as e:
@@ -383,17 +599,23 @@ class IPCRouter:
                         payload, ws_state, policy_result, res,
                         circuit_breaker_tripped=False,
                         latency_ms=total_latency,
+                        decision_source="fallback",
+                        layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3), "l2": round(cb_lat, 3), "l3": round(latency, 3)},
+                        metadata=shadow_metadata,
                     )
                     return res
             else:
                 # No Jev client configured or model still loading in background -> fail-closed to "ask"
+                cb_lat = (time.perf_counter() - t_cb_start) * 1000.0
                 latency_ms = (time.perf_counter() - t_start) * 1000.0
                 if self.model_loading and not self.model_ready:
                     status_val = "fail_closed"
                     reason_val = "Model initializing in background; failing closed to human confirmation."
+                    dec_source = "fallback"
                 else:
                     status_val = "success"
                     reason_val = policy_result.reason or "Ambiguous action requires user confirmation."
+                    dec_source = "l1"
 
                 res = {
                     "version": version,
@@ -406,7 +628,13 @@ class IPCRouter:
                     "auditId": audit_id,
                     "workspaceRoot": ws_state.workspace_root,
                 }
-                self._log_pre_tool_event(payload, ws_state, policy_result, res, latency_ms=latency_ms)
+                self._log_pre_tool_event(
+                    payload, ws_state, policy_result, res,
+                    latency_ms=latency_ms,
+                    decision_source=dec_source,
+                    layer_latencies_ms={"l0": round(l0_lat, 3), "l1": round(l1_lat, 3), "l2": round(cb_lat, 3)},
+                    metadata=shadow_metadata,
+                )
                 return res
 
     def _handle_post_tool_use(
@@ -455,6 +683,23 @@ class IPCRouter:
                 step_idx=step_idx,
             )
 
+        # STRICT mode cache invalidation: invalidated by ANY workspace write/edit, git state change, or trust-root change
+        tool_name = tool_call.get("name", "")
+        tool_args = tool_call.get("args", {})
+        if self.decision_cache and self.decision_cache.enabled:
+            should_invalidate = False
+            if tool_name in ("write_to_file", "replace_file_content"):
+                should_invalidate = True
+            elif tool_name == "run_command":
+                cmd_raw = tool_args.get("CommandLine", "") or tool_args.get("command", "") or ""
+                cmd_low = cmd_raw.strip().lower()
+                if re.search(r'\bgit\s+(?:checkout|commit|merge|rebase|reset|switch|pull|stash|apply|cherry-pick)\b', cmd_low):
+                    should_invalidate = True
+                elif re.search(r'(?<!2)>|\b>\b|>>|\|\s*(?:Set-Content|Out-File)\b|\b(?:touch|mkdir|cp|copy|mv|move|Copy-Item|Move-Item|New-Item|rm|rmdir|del|erase|Remove-Item)\b', cmd_raw, re.IGNORECASE):
+                    should_invalidate = True
+            if should_invalidate:
+                self.decision_cache.invalidate_trust_epoch(ws_state.workspace_root)
+
         latency_ms = (time.perf_counter() - t_start) * 1000.0
         res = {
             "version": version,
@@ -474,6 +719,9 @@ class IPCRouter:
         circuit_breaker_tripped: bool = False,
         jev_evaluation: Optional[Dict[str, Any]] = None,
         latency_ms: float = 0.0,
+        decision_source: Optional[str] = None,
+        layer_latencies_ms: Optional[Dict[str, float]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not self.audit_logger:
             return
@@ -481,6 +729,10 @@ class IPCRouter:
         try:
             from agent_airlock.audit.models import AuditEvent
             tool_call = payload.get("toolCall", {})
+            tool_args = dict(tool_call.get("args", {}))
+            cwd = payload.get("cwd") or tool_args.get("Cwd") or tool_args.get("cwd") or ws_state.workspace_root
+            policy_hash = self.policy_hash or getattr(self.policy_engine, "policy_hash", None)
+            cache_key_hash = res.get("cacheKeyHash")
             event = AuditEvent(
                 event_id=res.get("auditId") or self._generate_audit_id(),
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -488,7 +740,7 @@ class IPCRouter:
                 step_idx=int(payload.get("stepIdx", 0)),
                 event_type="PreToolUse",
                 tool_name=str(tool_call.get("name", "")),
-                tool_args=dict(tool_call.get("args", {})),
+                tool_args=tool_args,
                 policy_verdict=policy_result.verdict.value,
                 matched_rule_id=policy_result.rule_id,
                 circuit_breaker_tripped=circuit_breaker_tripped,
@@ -497,6 +749,12 @@ class IPCRouter:
                 reason=str(res.get("reason", "")),
                 latency_ms=round(float(latency_ms), 3),
                 workspace_root=ws_state.workspace_root,
+                decision_source=decision_source,
+                cwd=str(cwd) if cwd else None,
+                policy_hash=str(policy_hash) if policy_hash else None,
+                layer_latencies_ms=layer_latencies_ms,
+                cache_key_hash=cache_key_hash,
+                metadata=metadata or {},
             )
             self.audit_logger.log(event)
         except Exception as e:
@@ -516,6 +774,9 @@ class IPCRouter:
         try:
             from agent_airlock.audit.models import AuditEvent
             tool_call = payload.get("toolCall", {})
+            tool_args = dict(tool_call.get("args", {}))
+            cwd = payload.get("cwd") or tool_args.get("Cwd") or tool_args.get("cwd") or ws_state.workspace_root
+            policy_hash = getattr(self.policy_engine, "policy_hash", None)
             event = AuditEvent(
                 event_id=audit_id,
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -523,7 +784,7 @@ class IPCRouter:
                 step_idx=int(payload.get("stepIdx", 0)),
                 event_type="PostToolUse",
                 tool_name=str(tool_call.get("name", "")),
-                tool_args=dict(tool_call.get("args", {})),
+                tool_args=tool_args,
                 policy_verdict="none",
                 matched_rule_id=None,
                 circuit_breaker_tripped=False,
@@ -532,6 +793,8 @@ class IPCRouter:
                 reason=str(error_msg or "Execution recorded successfully"),
                 latency_ms=round(float(latency_ms), 3),
                 workspace_root=ws_state.workspace_root,
+                cwd=str(cwd) if cwd else None,
+                policy_hash=str(policy_hash) if policy_hash else None,
             )
             self.audit_logger.log(event)
         except Exception as e:

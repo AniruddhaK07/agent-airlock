@@ -3,7 +3,7 @@ Threshold evaluator and fail-closed decision logic for Jev evaluations.
 Applies configured confidence, blast-radius, and reversibility thresholds.
 """
 
-from typing import Optional
+from typing import Optional, Dict, Any
 from agent_airlock.config import JevThresholdsConfig
 from agent_airlock.backends.models import (
     GateDecision,
@@ -20,14 +20,26 @@ class JevEvaluator:
     or sub-threshold metric routes to human confirmation (ASK), never ALLOW.
     """
 
-    def __init__(self, thresholds: Optional[JevThresholdsConfig] = None):
+    def __init__(
+        self,
+        thresholds: Optional[JevThresholdsConfig] = None,
+        allow_authority: Optional[bool] = None,
+    ):
         self.thresholds = thresholds or JevThresholdsConfig()
+        if allow_authority is not None:
+            self.allow_authority = allow_authority
+        else:
+            self.allow_authority = getattr(self.thresholds, "allow_authority", False)
 
     def decide(
         self,
         evaluation: Optional[JevEvaluation],
         error: Optional[Exception] = None,
         latency_ms: float = 0.0,
+        tool_name: Optional[str] = None,
+        tool_args: Optional[Dict[str, Any]] = None,
+        rule_id: Optional[str] = None,
+        raw_cmd: Optional[str] = None,
     ) -> JevDecisionResult:
         """
         Applies gating thresholds to Jev response:
@@ -134,7 +146,37 @@ class JevEvaluator:
                     latency_ms=latency_ms,
                 )
 
-            # All threshold gates passed -> ALLOW
+            # 5d. Invariant: L3 ALLOW authority is OFF by default in Agent Airlock 1.1
+            if not self.allow_authority:
+                return JevDecisionResult(
+                    decision=GateDecision.ASK,
+                    reason=(
+                        "Laya evaluation meets safe thresholds, but L3 allow authority is disabled by default "
+                        "in Agent Airlock 1.1 (allow_authority=False); failing closed to human confirmation."
+                    ),
+                    evaluation=evaluation,
+                    latency_ms=latency_ms,
+                )
+
+            # 5e. Invariant: Even if allow_authority=True, L3 may never allow inline interpreter
+            # scripts (python -c, node -e, etc.) or dangerous constructs (breaks ASK-only policy).
+            cmd_check = raw_cmd or (tool_args.get("CommandLine", "") if tool_args else "")
+            from agent_airlock.policy.engine import HardPolicyEngine
+            if (
+                rule_id in ("inline-script-execution", "dangerous-construct-requires-confirmation")
+                or (cmd_check and HardPolicyEngine._is_inline_script(cmd_check))
+            ):
+                return JevDecisionResult(
+                    decision=GateDecision.ASK,
+                    reason=(
+                        "Inline interpreter scripts (-c/-e) and dangerous constructs are strictly human confirmation only; "
+                        "L3 auto-allow prohibited."
+                    ),
+                    evaluation=evaluation,
+                    latency_ms=latency_ms,
+                )
+
+            # All threshold gates passed and allow authority enabled -> ALLOW
             return JevDecisionResult(
                 decision=GateDecision.ALLOW,
                 reason=(
