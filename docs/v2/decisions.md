@@ -377,7 +377,31 @@ Historical v1 label boundaries and architecture decisions are preserved in [docs
   - `tests/test_policy_engine.py`: 37 unit tests passed, including `test_family_d_rules_and_near_misses` and `test_replay_baseline_deny_regression`.
   - `tests/test_policy_perf.py`: 3 passed in 0.82s.
   - `tests/test_prefilter_soundness.py`: 1 passed (0 differences).
-  - Metric M-032 (`scripts/replay.py --all`): 4,064 ALLOWs (57.64%), 38 DENYs (0.54%, baseline 37 + 1 justified daemon pid), 2,949 ASKs (41.82%). Remediation of 31 False-Denies, Containment Symlink Guard & Savings Reconciliation: 653 prompts saved (reconciled; Hard Deny 22 removed). 3-way fatigue range: First-Match [18.65/100, saving 653 prompts], Retroactive [8.65/100, saving 503 prompts], Delay-Only [31.07/100, saving 979 prompts]. Latency p50=0.151 ms, p95=1.765 ms, p99=4.940 ms (< 5.0 ms gate PASS). (All numbers IN-SAMPLE).
+---
+
+## ADR-017 — Phase 1.6 Stage 1 Model Evaluation & Approved L1 Gap Extensions
+- Date / session: 2026-10-14 / session 11
+- Status: approved
+- Decided by: user (Ani) / agent
+- Context:
+  Phase 1.6 Stage 1 requires evaluating whether the incumbent L3 model (Laya / ModernBERT) demonstrates discriminative signal on ambiguous commands (195 rows from review sheets 1c and 2, labeled S, A, D by Ani) compared to a simple feature baseline, before proceeding with model bake-off or training. Concurrently, approved L1 gap rules (Rules 1, 2, 3, 5, 7 and follow-up round: Write-Output, New-Item Directory, python -m pip inspect) and regex fixes for `git grep` and `Select-String` were integrated under the Policy Change Protocol.
+- Decisions:
+  1. **Phase 1.6 Stage 1 Evaluation Outcome**:
+     - Laya Confidence AUC for S vs not-S on 195 labeled rows: **0.5585** (bootstrap 95% CI: `[0.4577, 0.6586]`). Confidence interval spans 0.50 (indistinguishable from chance). Laya ECE is **0.3237**, exhibiting extreme overconfidence in bin `[0.8, 1.0]` (predicted mean confidence 0.915 vs actual safe rate 10.5%, gap 0.810).
+     - Simple Feature Baseline (command family, flag count, token count; 5-fold CV): AUC = **0.7197** (bootstrap 95% CI: `[0.6212, 0.8089]`), ECE = **0.0492**.
+     - **Stages 2–3 Deferred**: Model training and candidate bake-off are deferred pending Ani's ADR.
+     - **Documentation Invariant**: No document may claim the ML layer reduces prompts. The ML layer currently has near-zero allow volume (2/7,051 steps in replay) and cannot reliably discriminate ambiguous safe operations.
+  2. **L1 Gap Rules & Tokenizer Hardening**:
+     - Approved L1 rules implemented with strict guards: Safe PowerShell `Test-Path` (Rule 1), `Copy-Item` in workspace without `-Force`/`-Recurse` and sensitive destination check (Rule 2), `Get-Process` inspection (Rule 3), tool help queries for bare commands on PATH (Rule 5), safe local `git commit` without hooks/signing/amending (Rule 7), `Write-Output` of pure string literals, `New-Item -ItemType Directory` in workspace (no junctions/reparse points/sensitive dirs), and `python -m pip show|list|--version` only.
+     - Regex quote-awareness fixed for `git grep` and `Select-String` to allow quoted regex literals without unquoted shell expansions.
+     - Added comprehensive property/fuzz test verifying the invariant: ALLOW $\implies$ zero unquoted `; & | > < $ ` ( )` across segments.
+     - Derived runtime package directory dynamically (`Path(__file__).resolve().parent.parent.name`) for `DISALLOWED_DIRS_WORKSPACE_WRITE`, while supporting configurable `protected_dirs`.
+- Evidence:
+  - 195 rows tagged IN-SAMPLE in `docs/v2/metrics.md` (M-033, M-034).
+  - All 45 policy engine unit and fuzz tests passed (`tests/test_policy_engine.py`).
+  - Prefilter soundness: 0 regressions (`tests/test_prefilter_soundness.py`).
+  - Latency gate passed: cold p99 = 1.360 ms, warm p99 = 1.220 ms (< 5.0 ms).
+  - 0 false-allows across Sheet 1c (95 rows) and Sheet 2 (100 rows).
 
 
 
